@@ -77,6 +77,7 @@ function toMetaFallback({ timestamp, locationTag, photoUrl }) {
   return {
     timestamp,
     location_tag: locationTag || '',
+    ocr_engine: 'manual/fallback',
     filename: photoUrl || 'image',
     crop: { strategy: 'frontend-fallback' },
   };
@@ -87,6 +88,25 @@ function getDurationMinutes(startIso, endIso) {
   const end = new Date(endIso);
   if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return null;
   return Math.round((end.getTime() - start.getTime()) / 60000);
+}
+
+function parseManualTimestampInput(raw) {
+  const text = String(raw || '').trim();
+  if (!text) return null;
+
+  // Accept ISO directly.
+  const isoDate = new Date(text);
+  if (!Number.isNaN(isoDate.getTime())) {
+    return isoDate.toISOString();
+  }
+
+  // Accept: YYYY-MM-DD HH:MM:SS or YYYY/MM/DD HH:MM:SS
+  const match = text.match(/^(\d{4})[-/](\d{2})[-/](\d{2})\s+(\d{2}):(\d{2})(?::(\d{2}))?$/);
+  if (!match) return null;
+  const [, y, m, d, hh, mm, ss] = match;
+  const local = new Date(Number(y), Number(m) - 1, Number(d), Number(hh), Number(mm), Number(ss || '0'));
+  if (Number.isNaN(local.getTime())) return null;
+  return local.toISOString();
 }
 
 async function submitShiftMetaToBackend({ clockInMeta, clockOutMeta, profile, actor }) {
@@ -281,10 +301,23 @@ export default function ClockAction() {
         console.error('analyze failed', error);
       }
 
-      const ocrTimestamp = imageMeta?.timestamp;
-      if (!ocrTimestamp) {
-        toast.error('Could not read overlay timestamp from uploaded image. Please upload a clearer screenshot/photo.');
-        return;
+      let finalTimestamp = imageMeta?.timestamp || null;
+      if (!finalTimestamp) {
+        const entered = window.prompt(
+          'Could not read overlay timestamp. Enter timestamp manually in YYYY-MM-DD HH:MM:SS (24h) or ISO format.'
+        );
+        const manualIso = parseManualTimestampInput(entered);
+        if (!manualIso) {
+          toast.error('Valid timestamp is required for this upload.');
+          return;
+        }
+        finalTimestamp = manualIso;
+        imageMeta = {
+          ...(imageMeta || {}),
+          timestamp: manualIso,
+          timestamp_source: 'manual_entry',
+        };
+        toast.warning('Using manual timestamp for this upload.');
       }
 
       const detectedTag = resolveDetectedTag(imageMeta);
@@ -319,7 +352,7 @@ export default function ClockAction() {
       }
 
       if (action === 'out' && activeEntry?.time_in) {
-        const durationMinutes = getDurationMinutes(activeEntry.time_in, ocrTimestamp);
+        const durationMinutes = getDurationMinutes(activeEntry.time_in, finalTimestamp);
         if (durationMinutes === null) {
           toast.error('Unable to compute shift duration. Please retake/upload clearer photos.');
           return;
@@ -336,9 +369,33 @@ export default function ClockAction() {
 
       try {
         if (action === 'in') {
-          await clockInMutation.mutateAsync({ ...data, timestamp: ocrTimestamp, imageMeta });
+          await clockInMutation.mutateAsync({ ...data, timestamp: finalTimestamp, imageMeta });
+          const profile = {
+            full_name: user.full_name || user.display_name || '',
+            city_state: user.city_state || 'Columbus, OH',
+            customer: user.customer || 'N/A',
+            classification: user.classification || 'N/A',
+            hourly_rate: user.hourly_rate || 0,
+            per_diem: user.per_diem || 'N/A',
+            accommodation_allowance: user.accommodation_allowance || 'N/A',
+            stn_accommodation: user.stn_accommodation || 'N/A',
+            stn_rental: user.stn_rental || 'N/A',
+            stn_gas: user.stn_gas || 'N/A',
+          };
+          const actor = {
+            employee_email: user.email,
+            employee_name: user.display_name || user.full_name || user.email,
+            manager_email: user.manager_email || '',
+            customer: user.customer || user.company_name || '',
+            work_location_tag: user.work_location_tag || imageMeta?.location_tag || '',
+          };
+          try {
+            await submitShiftMetaToBackend({ clockInMeta: imageMeta, profile, actor });
+          } catch (error) {
+            console.error('submit_shift_meta clock-in failed', error);
+          }
         } else {
-          await clockOutMutation.mutateAsync({ ...data, timestamp: ocrTimestamp, imageMeta, deferBackendSync: false });
+          await clockOutMutation.mutateAsync({ ...data, timestamp: finalTimestamp, imageMeta, deferBackendSync: false });
         }
       } catch (error) {
         console.error('capture failed', error);
@@ -375,6 +432,29 @@ export default function ClockAction() {
       if (action === 'in') {
         const createdEntry = await clockInMutation.mutateAsync({ ...data, timestamp: fallbackTimestamp, imageMeta: optimisticMeta });
         toast.message('Clock-in recorded. OCR details will sync in the background.');
+
+        const profile = {
+          full_name: user.full_name || user.display_name || '',
+          city_state: user.city_state || 'Columbus, OH',
+          customer: user.customer || 'N/A',
+          classification: user.classification || 'N/A',
+          hourly_rate: user.hourly_rate || 0,
+          per_diem: user.per_diem || 'N/A',
+          accommodation_allowance: user.accommodation_allowance || 'N/A',
+          stn_accommodation: user.stn_accommodation || 'N/A',
+          stn_rental: user.stn_rental || 'N/A',
+          stn_gas: user.stn_gas || 'N/A',
+        };
+        const actor = {
+          employee_email: user.email,
+          employee_name: user.display_name || user.full_name || user.email,
+          manager_email: user.manager_email || '',
+          customer: user.customer || user.company_name || '',
+          work_location_tag: user.work_location_tag || optimisticMeta?.location_tag || '',
+        };
+        void submitShiftMetaToBackend({ clockInMeta: optimisticMeta, profile, actor }).catch((error) => {
+          console.error('submit_shift_meta clock-in failed', error);
+        });
 
         // OCR enrichment runs in background so clock-in appears instantly on dashboard.
         void (async () => {

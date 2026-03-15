@@ -36,5 +36,5 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
-
+uploads/
 .env

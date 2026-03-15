@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import base64
 from io import BytesIO
 import json
 import os
@@ -8,6 +9,8 @@ from pathlib import Path
 import re
 from shutil import copyfile
 from typing import Any
+from urllib import request as urllib_request
+from urllib import error as urllib_error
 
 from flask import Flask, jsonify, request, send_file
 from openpyxl import load_workbook
@@ -18,6 +21,11 @@ try:
     import psycopg
 except Exception:  # pragma: no cover - optional dependency in local-only runs
     psycopg = None
+
+try:
+    from paddleocr import PaddleOCR
+except Exception:  # pragma: no cover - optional dependency
+    PaddleOCR = None
 
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
@@ -98,6 +106,10 @@ app = Flask(__name__)
 DATABASE_URL = os.getenv('DATABASE_URL') or os.getenv('POSTGRES_URL') or os.getenv('POSTGRES_PRISMA_URL')
 DB_ENABLED = bool(DATABASE_URL and psycopg)
 DB_BOOTSTRAPPED = False
+GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', '').strip()
+GEMINI_MODEL = os.getenv('GEMINI_MODEL', 'gemini-2.5-flash').strip()
+GEMINI_FALLBACK_MODELS = ['gemini-2.5-flash', 'gemini-flash-latest']
+PADDLE_OCR_INSTANCE = None
 
 
 def get_db_connection() -> Any:
@@ -156,6 +168,103 @@ def preprocess_for_ocr(image: Image.Image) -> Image.Image:
     return gray.resize((gray.width * 2, gray.height * 2))
 
 
+def image_to_png_bytes(image: Image.Image) -> bytes:
+    buffer = BytesIO()
+    image.save(buffer, format='PNG')
+    return buffer.getvalue()
+
+
+def run_gemini_ocr(image: Image.Image) -> str:
+    if not GEMINI_API_KEY:
+        return ''
+
+    image_b64 = base64.b64encode(image_to_png_bytes(image)).decode('utf-8')
+    payload = {
+        'contents': [
+            {
+                'parts': [
+                    {
+                        'text': (
+                            'Read all visible text from this image exactly. '
+                            'Focus on timestamp overlay and location text. '
+                            'Return plain text only.'
+                        )
+                    },
+                    {
+                        'inline_data': {
+                            'mime_type': 'image/png',
+                            'data': image_b64,
+                        }
+                    },
+                ]
+            }
+        ]
+    }
+
+    model_candidates = [GEMINI_MODEL] + [m for m in GEMINI_FALLBACK_MODELS if m != GEMINI_MODEL]
+    for model_name in model_candidates:
+        try:
+            url = f'https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={GEMINI_API_KEY}'
+            req = urllib_request.Request(
+                url,
+                data=json.dumps(payload).encode('utf-8'),
+                headers={'Content-Type': 'application/json'},
+                method='POST',
+            )
+            with urllib_request.urlopen(req, timeout=8) as resp:
+                raw = resp.read().decode('utf-8', 'ignore')
+            parsed = json.loads(raw)
+            candidates = parsed.get('candidates') or []
+            texts: list[str] = []
+            for candidate in candidates:
+                content = candidate.get('content') or {}
+                for part in content.get('parts') or []:
+                    text = str(part.get('text') or '').strip()
+                    if text:
+                        texts.append(text)
+            joined = ' '.join(' '.join(texts).split())
+            if joined:
+                return joined
+        except (urllib_error.URLError, TimeoutError, ValueError, KeyError, json.JSONDecodeError):
+            continue
+        except Exception:
+            continue
+
+    return ''
+
+
+def get_paddle_ocr() -> Any:
+    global PADDLE_OCR_INSTANCE
+    if PaddleOCR is None:
+        return None
+    if PADDLE_OCR_INSTANCE is None:
+        PADDLE_OCR_INSTANCE = PaddleOCR(use_angle_cls=True, lang='en', show_log=False)
+    return PADDLE_OCR_INSTANCE
+
+
+def run_paddle_ocr(image: Image.Image) -> str:
+    ocr = get_paddle_ocr()
+    if ocr is None:
+        return ''
+    try:
+        # PaddleOCR accepts ndarray; convert lazily to avoid mandatory numpy import unless used.
+        import numpy as np  # type: ignore
+
+        arr = np.array(image)
+        result = ocr.ocr(arr, cls=True)
+        lines: list[str] = []
+        for block in result or []:
+            for item in block or []:
+                if len(item) < 2:
+                    continue
+                text = str((item[1] or ['', 0])[0]).strip()
+                if text:
+                    lines.append(text)
+        return ' '.join(' '.join(lines).split())
+    except Exception:
+        return ''
+
+
 def run_fast_ocr(image: Image.Image) -> str:
     text = pytesseract.image_to_string(image, config='--oem 1 --psm 6')
     collapsed = ' '.join(text.split())
@@ -163,6 +272,19 @@ def run_fast_ocr(image: Image.Image) -> str:
         return collapsed
     fallback = pytesseract.image_to_string(image, config='--oem 1 --psm 11')
     return ' '.join(fallback.split())
+
+
+def run_ocr_with_fallbacks(image: Image.Image) -> tuple[str, str]:
+    # Priority order: Gemini -> PaddleOCR -> Tesseract
+    gemini_text = run_gemini_ocr(image)
+    if gemini_text:
+        return gemini_text, 'gemini'
+
+    paddle_text = run_paddle_ocr(image)
+    if paddle_text:
+        return paddle_text, 'paddle'
+
+    return run_fast_ocr(image), 'tesseract'
 
 
 def parse_timestamp(ocr_text: str) -> datetime | None:
@@ -238,7 +360,7 @@ def analyze_image_bytes(image_bytes: bytes, filename: str) -> dict[str, Any]:
         source_size = image.size
         cropped = crop_bottom_right_half(image)
         prepared = preprocess_for_ocr(cropped)
-        ocr_text = run_fast_ocr(prepared)
+        ocr_text, ocr_engine = run_ocr_with_fallbacks(prepared)
 
     timestamp = parse_timestamp(ocr_text)
     county = parse_county(ocr_text)
@@ -247,6 +369,7 @@ def analyze_image_bytes(image_bytes: bytes, filename: str) -> dict[str, Any]:
     return {
         'filename': filename,
         'ocr_text': ocr_text,
+        'ocr_engine': ocr_engine,
         'timestamp': timestamp.isoformat() if timestamp else None,
         'date': timestamp.date().isoformat() if timestamp else None,
         'time': timestamp.strftime('%I:%M:%S %p') if timestamp else None,
@@ -541,37 +664,86 @@ def persist_shift_to_database(
                 employee_id = employee_row[0]
                 resolved_manager_id = employee_row[1] or manager_id
 
-                cur.execute(
-                    """
-                    insert into timesheet_entries (
-                      employee_id, manager_id, shift_date, payroll_period, status,
-                      data_center_location, location_source,
-                      time_in, time_out, total_hours_text, hours_decimal,
-                      clock_in_photo_url, clock_out_photo_url, clock_in_meta, clock_out_meta, comment
+                entry_row = None
+                if time_out_dt:
+                    # Complete the latest open clock-in row first to avoid duplicates.
+                    cur.execute(
+                        """
+                        update timesheet_entries
+                        set
+                          manager_id = %s,
+                          shift_date = %s,
+                          payroll_period = %s,
+                          status = %s,
+                          data_center_location = %s,
+                          location_source = %s,
+                          time_in = %s,
+                          time_out = %s,
+                          total_hours_text = %s,
+                          hours_decimal = %s,
+                          clock_in_meta = %s::jsonb,
+                          clock_out_meta = %s::jsonb,
+                          comment = %s,
+                          updated_at = now()
+                        where id = (
+                          select id from timesheet_entries
+                          where employee_id = %s and status = 'clocked_in' and time_out is null
+                          order by created_at desc
+                          limit 1
+                        )
+                        returning id
+                        """,
+                        (
+                            resolved_manager_id,
+                            shift_dt.date(),
+                            '',
+                            'completed',
+                            location_tag or None,
+                            'backend_ocr',
+                            time_in_dt,
+                            time_out_dt,
+                            hours_text,
+                            float(hours_decimal or 0),
+                            json.dumps(clock_in_result) if clock_in_result else None,
+                            json.dumps(clock_out_result) if clock_out_result else None,
+                            profile.get('comment') or '',
+                            employee_id,
+                        ),
                     )
-                    values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s)
-                    returning id
-                    """,
-                    (
-                        employee_id,
-                        resolved_manager_id,
-                        shift_dt.date(),
-                        '',
-                        status,
-                        location_tag or None,
-                        'backend_ocr',
-                        time_in_dt,
-                        time_out_dt,
-                        hours_text,
-                        float(hours_decimal or 0),
-                        None,
-                        None,
-                        json.dumps(clock_in_result) if clock_in_result else None,
-                        json.dumps(clock_out_result) if clock_out_result else None,
-                        profile.get('comment') or '',
-                    ),
-                )
-                entry_row = cur.fetchone()
+                    entry_row = cur.fetchone()
+
+                if not entry_row:
+                    cur.execute(
+                        """
+                        insert into timesheet_entries (
+                          employee_id, manager_id, shift_date, payroll_period, status,
+                          data_center_location, location_source,
+                          time_in, time_out, total_hours_text, hours_decimal,
+                          clock_in_photo_url, clock_out_photo_url, clock_in_meta, clock_out_meta, comment
+                        )
+                        values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb, %s)
+                        returning id
+                        """,
+                        (
+                            employee_id,
+                            resolved_manager_id,
+                            shift_dt.date(),
+                            '',
+                            status,
+                            location_tag or None,
+                            'backend_ocr',
+                            time_in_dt,
+                            time_out_dt,
+                            hours_text,
+                            float(hours_decimal or 0),
+                            None,
+                            None,
+                            json.dumps(clock_in_result) if clock_in_result else None,
+                            json.dumps(clock_out_result) if clock_out_result else None,
+                            profile.get('comment') or '',
+                        ),
+                    )
+                    entry_row = cur.fetchone()
             conn.commit()
 
         return {'enabled': True, 'saved': True, 'entry_id': str(entry_row[0]) if entry_row else ''}
@@ -887,6 +1059,120 @@ def analyze() -> Any:
         results.append(analyze_image_bytes(image_bytes, uploaded.filename or 'upload'))
 
     return jsonify({'count': len(results), 'results': results})
+
+
+@app.route('/timesheet_entries', methods=['GET'])
+def list_timesheet_entries() -> Any:
+    if not DB_ENABLED:
+        return jsonify({'entries': [], 'reason': 'db_disabled'}), 200
+
+    employee_email = request.args.get('employee_email', '').strip().lower()
+    manager_email = request.args.get('manager_email', '').strip().lower()
+    status = request.args.get('status', '').strip().lower()
+    limit_raw = request.args.get('limit', '').strip()
+
+    where_parts: list[str] = []
+    params: list[Any] = []
+
+    if employee_email:
+        where_parts.append('lower(e.email) = %s')
+        params.append(employee_email)
+    if manager_email:
+        where_parts.append("lower(coalesce(m.email, '')) = %s")
+        params.append(manager_email)
+    if status:
+        where_parts.append('lower(t.status) = %s')
+        params.append(status)
+
+    where_sql = f" where {' and '.join(where_parts)}" if where_parts else ''
+    limit_sql = ''
+    if limit_raw.isdigit():
+        limit_sql = ' limit %s'
+        params.append(int(limit_raw))
+
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    select
+                      t.id,
+                      e.email as employee_email,
+                      e.full_name as employee_name,
+                      t.shift_date,
+                      t.data_center_location,
+                      t.location_source,
+                      e.city_state,
+                      coalesce(nullif(e.customer, ''), e.company_name, '') as customer,
+                      e.classification,
+                      e.hourly_rate,
+                      e.per_diem,
+                      e.accommodation_allowance,
+                      e.stn_accommodation,
+                      e.stn_rental,
+                      e.stn_gas,
+                      t.time_in,
+                      t.time_out,
+                      t.total_hours_text,
+                      t.hours_decimal,
+                      t.comment,
+                      t.clock_in_photo_url,
+                      t.clock_out_photo_url,
+                      t.clock_in_meta,
+                      t.clock_out_meta,
+                      t.payroll_period,
+                      t.status,
+                      t.created_at,
+                      t.updated_at
+                    from timesheet_entries t
+                    join app_users e on e.id = t.employee_id
+                    left join app_users m on m.id = t.manager_id
+                    {where_sql}
+                    order by t.created_at desc
+                    {limit_sql}
+                    """,
+                    tuple(params),
+                )
+                rows = cur.fetchall()
+
+        entries: list[dict[str, Any]] = []
+        for row in rows:
+            entries.append(
+                {
+                    'id': str(row[0]) if row[0] else None,
+                    'employee_email': row[1] or '',
+                    'employee_name': row[2] or '',
+                    'date': row[3].isoformat() if row[3] else '',
+                    'data_center_location': row[4] or '',
+                    'location_source': row[5] or '',
+                    'city_state': row[6] or '',
+                    'customer': row[7] or '',
+                    'classification': row[8] or '',
+                    'hourly_rate': float(row[9] or 0),
+                    'per_diem': row[10] or '',
+                    'accommodation_allowance': row[11] or '',
+                    'stn_accommodation': row[12] or '',
+                    'stn_rental': row[13] or '',
+                    'stn_gas': row[14] or '',
+                    'time_in': row[15].isoformat() if row[15] else '',
+                    'time_out': row[16].isoformat() if row[16] else '',
+                    'total_hours': row[17] or '0:00',
+                    'hours_decimal': float(row[18] or 0),
+                    'comment': row[19] or '',
+                    'clock_in_photo_url': row[20] or '',
+                    'clock_out_photo_url': row[21] or '',
+                    'clock_in_meta': row[22] or None,
+                    'clock_out_meta': row[23] or None,
+                    'payroll_period': row[24] or '',
+                    'status': row[25] or '',
+                    'created_date': row[26].isoformat() if row[26] else '',
+                    'updated_date': row[27].isoformat() if row[27] else '',
+                }
+            )
+
+        return jsonify({'entries': entries}), 200
+    except Exception as exc:
+        return jsonify({'entries': [], 'error': str(exc)}), 200
 
 
 @app.route('/submit_shift', methods=['POST'])

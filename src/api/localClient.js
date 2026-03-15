@@ -355,6 +355,29 @@ export const localClient = {
   entities: {
     TimesheetEntry: {
       async filter(filterObj = {}, sortExpr, limit) {
+        // Prefer DB-backed entries when backend is available.
+        try {
+          const params = new URLSearchParams();
+          for (const [k, v] of Object.entries(filterObj || {})) {
+            if (v !== undefined && v !== null && String(v).trim() !== '') {
+              params.set(k, String(v).trim());
+            }
+          }
+          if (typeof limit === 'number') params.set('limit', String(limit));
+
+          const query = params.toString();
+          const res = await fetch(`${BACKEND_BASE_URL}/timesheet_entries${query ? `?${query}` : ''}`);
+          if (res.ok) {
+            const data = await res.json();
+            if (Array.isArray(data?.entries)) {
+              const sortedRemote = applySort(data.entries, sortExpr);
+              return typeof limit === 'number' ? sortedRemote.slice(0, limit) : sortedRemote;
+            }
+          }
+        } catch {
+          // Fall back to local cache.
+        }
+
         const rows = readJson(ENTRIES_KEY, []);
         const filtered = applyFilter(rows, filterObj);
         const sorted = applySort(filtered, sortExpr);
