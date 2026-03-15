@@ -1,12 +1,12 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Navigate } from 'react-router-dom';
+import { Navigate, useNavigate } from 'react-router-dom';
 import { useAuth } from '@/lib/AuthContext';
 import { localClient } from '@/api/localClient';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Settings2, Save } from 'lucide-react';
+import { Settings2, Save, Trash2, CheckCircle2 } from 'lucide-react';
 import { toast } from 'sonner';
 
 const inputClass = 'mt-1 bg-slate-50 border-slate-200 text-slate-900';
@@ -20,10 +20,15 @@ function Field({ label, children }) {
   );
 }
 
+const BACKEND_BASE_URL = (import.meta.env.VITE_BACKEND_URL || 'http://localhost:8765').replace(/\/$/, '');
+
 export default function Settings() {
   const { user, checkAppState } = useAuth();
+  const navigate = useNavigate();
   const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
   const [error, setError] = useState('');
+  const [clearing, setClearing] = useState(false);
 
   const initial = useMemo(
     () => ({
@@ -80,12 +85,34 @@ export default function Settings() {
 
       await localClient.auth.updateMe(payload);
       await checkAppState();
-      toast.success('Settings updated');
+      setSaved(true);
+      setTimeout(() => navigate('/Dashboard'), 1500);
     } catch (e) {
       console.error('Failed saving settings', e);
       setError(e?.message || 'Unable to save settings.');
     } finally {
       setSaving(false);
+    }
+  };
+
+  const clearTestEntries = async () => {
+    if (!window.confirm('Delete ALL your timesheet entries? This cannot be undone.')) return;
+    setClearing(true);
+    try {
+      localClient.clearLocalEntries(user.email);
+      const scope = user.user_role === 'manager' ? 'team' : 'self';
+      const res = await fetch(`${BACKEND_BASE_URL}/admin/clear-entries`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: user.email, scope }),
+      });
+      const data = res.ok ? await res.json() : {};
+      const dbCount = data.cleared ?? 0;
+      toast.success(`Cleared (${dbCount} entries removed from DB)`);
+    } catch (e) {
+      toast.error('Failed to clear entries: ' + (e?.message || 'unknown error'));
+    } finally {
+      setClearing(false);
     }
   };
 
@@ -95,6 +122,13 @@ export default function Settings() {
         <h1 className="text-2xl font-bold text-slate-900">Settings</h1>
         <p className="text-slate-500 text-sm mt-0.5">Update your setup information anytime</p>
       </div>
+
+      {saved && (
+        <div className="flex items-center gap-2 bg-green-50 border border-green-200 text-green-800 text-sm font-medium rounded-xl px-4 py-3">
+          <CheckCircle2 className="w-4 h-4 shrink-0 text-green-600" />
+          Settings saved! Redirecting to dashboard…
+        </div>
+      )}
 
       <Card className="border-slate-200 rounded-2xl">
         <CardHeader className="pb-3">
@@ -221,6 +255,37 @@ export default function Settings() {
               <>
                 <Save className="w-4 h-4 mr-2" />
                 Save Settings
+              </>
+            )}
+          </Button>
+        </CardContent>
+      </Card>
+
+      <Card className="border-red-200 rounded-2xl">
+        <CardHeader className="pb-3">
+          <CardTitle className="flex items-center gap-2 text-base text-red-700">
+            <Trash2 className="w-4 h-4" />
+            Demo / Test Data
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <p className="text-slate-500 text-sm">
+            {user?.user_role === 'manager'
+              ? 'Removes all timesheet entries for your entire team from both this device and the database.'
+              : 'Removes all your timesheet entries from this device and the database.'}
+          </p>
+          <Button
+            variant="outline"
+            className="w-full border-red-300 text-red-700 hover:bg-red-50"
+            onClick={clearTestEntries}
+            disabled={clearing}
+          >
+            {clearing ? (
+              <div className="w-4 h-4 border-2 border-red-300 border-t-red-700 rounded-full animate-spin" />
+            ) : (
+              <>
+                <Trash2 className="w-4 h-4 mr-2" />
+                {user?.user_role === 'manager' ? 'Clear Team Test Entries' : 'Clear My Test Entries'}
               </>
             )}
           </Button>

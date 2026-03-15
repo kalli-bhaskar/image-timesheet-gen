@@ -158,7 +158,7 @@ export default function ClockAction() {
   const clockInMutation = useMutation({
     mutationFn: async ({ photoUrl, timestamp, imageMeta }) => {
       const today = format(new Date(timestamp), 'yyyy-MM-dd');
-      const locationTag = imageMeta?.location_tag || 'AUTO';
+      const locationTag = imageMeta?.location_tag || '';
       await localClient.entities.TimesheetEntry.create({
         employee_email: user.email,
         employee_name: user.display_name || user.full_name || 'N/A',

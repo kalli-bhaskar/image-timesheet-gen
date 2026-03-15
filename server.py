@@ -220,6 +220,19 @@ def determine_location_tag(county: str | None) -> str:
     return COUNTY_TAGS.get(canonical_county, '')
 
 
+def sanitize_tag(value: str | None, valid_tags: set[str] | None = None) -> str | None:
+    """Return value if it looks like a valid location tag code, else None."""
+    if not value:
+        return None
+    upper = str(value).upper().strip()
+    # 'AUTO' and other placeholder strings are not real tags
+    if not re.match(r'^[A-Z]{2,8}$', upper):
+        return None
+    if valid_tags is not None:
+        return upper if upper in valid_tags else None
+    return upper
+
+
 def analyze_image_bytes(image_bytes: bytes, filename: str) -> dict[str, Any]:
     with Image.open(BytesIO(image_bytes)) as image:
         source_size = image.size
@@ -453,6 +466,12 @@ def persist_shift_to_database(
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cur:
+                # Fetch valid tags once to avoid FK violations from placeholder values like 'AUTO'
+                cur.execute('SELECT tag FROM location_tags')
+                valid_tags: set[str] = {row[0] for row in cur.fetchall()}
+                work_location_tag = sanitize_tag(work_location_tag, valid_tags)
+                location_tag = sanitize_tag(location_tag, valid_tags) or ''
+
                 manager_id = None
                 if manager_email:
                     cur.execute(
@@ -577,6 +596,97 @@ def ensure_database_ready() -> None:
 @app.route('/health', methods=['GET'])
 def health() -> Any:
     return jsonify({'ok': True, 'database_enabled': DB_ENABLED})
+
+
+@app.route('/admin/clear-entries', methods=['POST'])
+def clear_entries() -> Any:
+    """Delete timesheet entries for one user (or a whole manager's team) from the DB.
+    Body: { "email": "...", "scope": "self" | "team" }
+    - scope=self  → delete entries for that email only (default)
+    - scope=team  → delete entries for all employees managed by that email
+    """
+    payload = request.get_json(silent=True) or {}
+    email = str(payload.get('email') or '').strip().lower()
+    scope = str(payload.get('scope') or 'self').strip().lower()
+    if not email:
+        return jsonify({'error': 'email required'}), 400
+
+    if not DB_ENABLED:
+        return jsonify({'cleared': 0, 'reason': 'db_disabled'}), 200
+
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                if scope == 'team':
+                    cur.execute(
+                        """
+                        delete from timesheet_entries
+                        where employee_id in (
+                          select id from app_users
+                          where manager_id = (select id from app_users where email = %s)
+                        )
+                        """,
+                        (email,),
+                    )
+                else:
+                    cur.execute(
+                        """
+                        delete from timesheet_entries
+                        where employee_id = (select id from app_users where email = %s)
+                        """,
+                        (email,),
+                    )
+                cleared = cur.rowcount
+            conn.commit()
+        return jsonify({'cleared': cleared}), 200
+    except Exception as exc:
+        return jsonify({'cleared': 0, 'error': str(exc)}), 200
+
+
+@app.route('/user', methods=['GET'])
+def get_user() -> Any:
+    email = request.args.get('email', '').strip().lower()
+    if not email:
+        return jsonify({'error': 'email query param required'}), 400
+
+    if not DB_ENABLED:
+        return jsonify({'found': False, 'reason': 'db_disabled'}), 200
+
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT u.id, u.email, u.full_name, u.display_name, u.user_role, u.setup_complete,
+                           u.company_name, u.city_state, u.work_location_tag, u.manager_id,
+                           u.customer, u.classification, u.hourly_rate, u.per_diem,
+                           u.accommodation_allowance, u.stn_accommodation, u.stn_rental, u.stn_gas,
+                           m.email AS manager_email
+                    FROM app_users u
+                    LEFT JOIN app_users m ON m.id = u.manager_id
+                    WHERE u.email = %s
+                    """,
+                    (email,),
+                )
+                row = cur.fetchone()
+
+        if not row:
+            return jsonify({'found': False}), 200
+
+        col_names = [
+            'id', 'email', 'full_name', 'display_name', 'user_role', 'setup_complete',
+            'company_name', 'city_state', 'work_location_tag', 'manager_id',
+            'customer', 'classification', 'hourly_rate', 'per_diem',
+            'accommodation_allowance', 'stn_accommodation', 'stn_rental', 'stn_gas',
+            'manager_email',
+        ]
+        user = dict(zip(col_names, row))
+        user['id'] = str(user['id']) if user['id'] else None
+        user['manager_id'] = str(user['manager_id']) if user['manager_id'] else None
+        user['hourly_rate'] = float(user['hourly_rate'] or 0)
+        return jsonify({'found': True, 'user': user}), 200
+    except Exception as exc:
+        return jsonify({'found': False, 'error': str(exc)}), 200
 
 
 @app.route('/analyze', methods=['POST'])

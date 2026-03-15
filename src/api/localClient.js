@@ -1,5 +1,6 @@
 const USER_KEY = 'timetrack_user';
 const USERS_KEY = 'timetrack_users';
+const BACKEND_BASE_URL = (typeof import.meta !== 'undefined' && import.meta.env?.VITE_BACKEND_URL || 'http://localhost:8765').replace(/\/$/, '');
 const ENTRIES_KEY = 'timetrack_entries';
 const SESSION_KEY = 'timetrack_session';
 const LOCATION_TAGS_KEY = 'timetrack_location_tags';
@@ -262,6 +263,38 @@ export const localClient = {
         user = normalizeUser({ ...user, full_name: fullName, display_name: fullName });
       }
 
+      // Sync authoritative fields (especially user_role) from the database on every login.
+      try {
+        const res = await fetch(`${BACKEND_BASE_URL}/user?email=${encodeURIComponent(normalizedEmail)}`);
+        if (res.ok) {
+          const data = await res.json();
+          if (data.found && data.user) {
+            const dbUser = data.user;
+            user = normalizeUser({
+              ...user,
+              user_role: dbUser.user_role || user.user_role,
+              setup_complete: dbUser.setup_complete ?? user.setup_complete,
+              full_name: dbUser.full_name || user.full_name,
+              display_name: dbUser.display_name || dbUser.full_name || user.display_name,
+              work_location_tag: dbUser.work_location_tag || user.work_location_tag,
+              company_name: dbUser.company_name || user.company_name,
+              city_state: dbUser.city_state || user.city_state,
+              manager_email: dbUser.manager_email || user.manager_email,
+              customer: dbUser.customer || user.customer,
+              classification: dbUser.classification || user.classification,
+              hourly_rate: dbUser.hourly_rate ?? user.hourly_rate,
+              per_diem: dbUser.per_diem || user.per_diem,
+              accommodation_allowance: dbUser.accommodation_allowance || user.accommodation_allowance,
+              stn_accommodation: dbUser.stn_accommodation || user.stn_accommodation,
+              stn_rental: dbUser.stn_rental || user.stn_rental,
+              stn_gas: dbUser.stn_gas || user.stn_gas,
+            });
+          }
+        }
+      } catch {
+        // Backend unavailable — proceed with locally cached data.
+      }
+
       setCurrentUser(user);
       setActiveSession(user.email);
       return user;
@@ -405,5 +438,18 @@ export const localClient = {
         return { file_url };
       },
     },
+  },
+  /**
+   * Clear all timesheet entries for a given email from localStorage.
+   * Returns the count of removed entries.
+   */
+  clearLocalEntries(email) {
+    const normalizedEmail = String(email || '').trim().toLowerCase();
+    const entries = readJson(ENTRIES_KEY, []);
+    const kept = entries.filter(
+      (e) => String(e.employee_email || '').toLowerCase() !== normalizedEmail
+    );
+    writeJson(ENTRIES_KEY, kept);
+    return entries.length - kept.length;
   },
 };
