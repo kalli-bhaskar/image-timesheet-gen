@@ -1,5 +1,6 @@
 import React from 'react';
 import { TIMESHEET_TEMPLATE_HEADERS } from '@/lib/timesheetSchema';
+import { safeHoursDecimal } from './timeUtils';
 
 // Helper to generate CSV that matches the Excel template structure
 export function generateTimesheetCSV(entries) {
@@ -18,7 +19,7 @@ export function generateTimesheetCSV(entries) {
     e.time_in ? new Date(e.time_in).toLocaleTimeString() : '',
     e.time_out ? new Date(e.time_out).toLocaleTimeString() : '',
     e.total_hours || '0:00',
-    e.hours_decimal || 0,
+    safeHoursDecimal(e),
     e.stn_accommodation || 'N/A',
     e.stn_rental || 'N/A',
     e.stn_gas || 'N/A',

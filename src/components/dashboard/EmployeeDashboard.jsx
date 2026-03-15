@@ -2,7 +2,7 @@ import React from 'react';
 import { Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { localClient } from '@/api/localClient';
-import { getWeekRange, formatTime, formatDateStr } from '../timeUtils';
+import { getWeekRange, formatTime, formatDateStr, safeHoursDecimal } from '../timeUtils';
 import PayrollPeriodBadge from '../PayrollPeriodBadge';
 import { Clock, DollarSign, ArrowRight, LogIn, LogOut } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -21,7 +21,7 @@ export default function EmployeeDashboard({ user }) {
     (e) => new Date(e.date) >= start && new Date(e.date) <= end && e.status === 'completed'
   );
 
-  const totalHours = weekEntries.reduce((sum, e) => sum + (e.hours_decimal || 0), 0);
+  const totalHours = weekEntries.reduce((sum, e) => sum + safeHoursDecimal(e), 0);
   const estimatedPay = totalHours * (user.hourly_rate || 0);
 
   const activeEntry = entries.find((e) => e.status === 'clocked_in');
@@ -114,7 +114,7 @@ export default function EmployeeDashboard({ user }) {
                   </p>
                 </div>
                 <div className="text-right">
-                  <p className="text-sm font-semibold text-slate-900">{entry.hours_decimal}h</p>
+                  <p className="text-sm font-semibold text-slate-900">{safeHoursDecimal(entry)}h</p>
                   <Badge variant="secondary" className="text-[10px]">
                     {entry.data_center_location}
                   </Badge>

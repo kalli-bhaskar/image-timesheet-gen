@@ -646,21 +646,27 @@ def submit_shift_meta() -> Any:
 
     profile = extract_profile(profile_input)
     actor = extract_submission_actor(payload)
+
+    # Always persist to DB first — independent of workbook generation.
+    db_result = persist_shift_to_database(clock_in_result, clock_out_result, profile, actor)
+
+    workbook_error = None
+    workbook_path = None
     try:
         workbook_path = write_shift_to_workbook(clock_in_result, clock_out_result, profile)
     except (ValueError, KeyError, FileNotFoundError) as exc:
-        return jsonify({'error': str(exc)}), 400
-
-    db_result = persist_shift_to_database(clock_in_result, clock_out_result, profile, actor)
+        workbook_error = str(exc)
 
     response = {
         'ok': True,
         'clock_in': clock_in_result,
         'clock_out': clock_out_result,
-        'workbook_path': str(workbook_path),
-        'download_url': '/download/latest-timesheet',
+        'workbook_path': str(workbook_path) if workbook_path else None,
+        'download_url': '/download/latest-timesheet' if workbook_path else None,
         'db': db_result,
     }
+    if workbook_error:
+        response['workbook_warning'] = workbook_error
     return jsonify(response)
 
 

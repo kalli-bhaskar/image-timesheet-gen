@@ -3,7 +3,7 @@ import { useAuth } from '@/lib/AuthContext';
 import { useQuery } from '@tanstack/react-query';
 import { localClient } from '@/api/localClient';
 import { Navigate } from 'react-router-dom';
-import { formatTime, formatDateStr, getPayrollPeriod } from '../components/timeUtils';
+import { formatTime, formatDateStr, getPayrollPeriod, safeHoursDecimal } from '../components/timeUtils';
 import { downloadCSV } from '../components/ExcelExport';
 import PayrollPeriodBadge from '../components/PayrollPeriodBadge';
 import { Clock, MapPin, Camera, Download } from 'lucide-react';
@@ -41,7 +41,11 @@ export default function MyTimesheets() {
 
   const handleDownload = () => {
     if (!completedEntries.length) return;
-    downloadCSV(completedEntries, `my_timesheet_${new Date().toISOString().slice(0, 10)}.csv`);
+    const sanitized = completedEntries.map((entry) => ({
+      ...entry,
+      hours_decimal: safeHoursDecimal(entry),
+    }));
+    downloadCSV(sanitized, `my_timesheet_${new Date().toISOString().slice(0, 10)}.csv`);
   };
 
   return (
@@ -82,7 +86,7 @@ export default function MyTimesheets() {
                   {period.replace(' to ', ' → ')}
                 </Badge>
                 <span className="text-xs text-slate-400">
-                  {periodEntries.reduce((s, e) => s + (e.hours_decimal || 0), 0).toFixed(1)}h total
+                  {periodEntries.reduce((s, e) => s + safeHoursDecimal(e), 0).toFixed(1)}h total
                 </span>
               </div>
               <div className="space-y-2">
@@ -95,7 +99,7 @@ export default function MyTimesheets() {
                       <p className="font-medium text-slate-900 text-sm">
                         {formatDateStr(entry.date)}
                       </p>
-                      <span className="text-sm font-bold text-slate-900">{entry.hours_decimal}h</span>
+                      <span className="text-sm font-bold text-slate-900">{safeHoursDecimal(entry)}h</span>
                     </div>
                     <div className="grid grid-cols-4 gap-2 text-[11px] text-slate-500 rounded-lg bg-slate-50 p-2">
                       <div>
@@ -112,7 +116,7 @@ export default function MyTimesheets() {
                       </div>
                       <div>
                         <p className="uppercase tracking-wide text-slate-400">Hours</p>
-                        <p className="font-semibold text-slate-700">{entry.hours_decimal || 0}h</p>
+                        <p className="font-semibold text-slate-700">{safeHoursDecimal(entry)}h</p>
                       </div>
                     </div>
                     {(entry.clock_in_photo_url || entry.clock_out_photo_url) && (

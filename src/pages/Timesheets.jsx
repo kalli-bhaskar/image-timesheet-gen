@@ -3,7 +3,7 @@ import { useAuth } from '@/lib/AuthContext';
 import { useQuery } from '@tanstack/react-query';
 import { localClient } from '@/api/localClient';
 import { Navigate } from 'react-router-dom';
-import { formatTime, formatDateStr, getPayrollPeriod } from '../components/timeUtils';
+import { formatTime, formatDateStr, getPayrollPeriod, safeHoursDecimal } from '../components/timeUtils';
 import { downloadCSV } from '../components/ExcelExport';
 import PayrollPeriodBadge from '../components/PayrollPeriodBadge';
 import { Button } from '@/components/ui/button';
@@ -52,7 +52,11 @@ export default function Timesheets() {
   const handleExport = () => {
     const toExport = periodFilter !== 'all' ? filtered : managedEntries;
     const periodLabel = periodFilter !== 'all' ? periodFilter.replace(/ /g, '_') : 'all';
-    downloadCSV(toExport, `timesheet_${periodLabel}.csv`);
+    const sanitized = toExport.map((entry) => ({
+      ...entry,
+      hours_decimal: safeHoursDecimal(entry),
+    }));
+    downloadCSV(sanitized, `timesheet_${periodLabel}.csv`);
   };
 
   return (
@@ -123,7 +127,7 @@ export default function Timesheets() {
                     <p className="text-xs text-slate-500">{formatDateStr(entry.date)}</p>
                   </div>
                 </div>
-                <span className="text-sm font-bold text-slate-900">{entry.hours_decimal}h</span>
+                <span className="text-sm font-bold text-slate-900">{safeHoursDecimal(entry)}h</span>
               </div>
               <div className="flex items-center gap-3 text-xs text-slate-500 mt-1">
                 <div className="flex items-center gap-1">
@@ -133,7 +137,7 @@ export default function Timesheets() {
                 <Badge variant="secondary" className="text-[10px]">
                   {entry.data_center_location}
                 </Badge>
-                <span>${((entry.hours_decimal || 0) * (entry.hourly_rate || 0)).toFixed(2)}</span>
+                <span>${(safeHoursDecimal(entry) * (entry.hourly_rate || 0)).toFixed(2)}</span>
               </div>
             </div>
           ))}

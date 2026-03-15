@@ -48,3 +48,18 @@ export function formatDateStr(dateStr) {
   if (!dateStr) return '';
   return format(new Date(dateStr), 'MMM dd, yyyy');
 }
+
+export function safeHoursDecimal(entry, maxHours = 16) {
+  const raw = Number(entry?.hours_decimal);
+  if (Number.isFinite(raw) && raw >= 0 && raw <= maxHours) {
+    return Math.round(raw * 100) / 100;
+  }
+
+  const inTs = new Date(entry?.time_in || '');
+  const outTs = new Date(entry?.time_out || '');
+  if (Number.isNaN(inTs.getTime()) || Number.isNaN(outTs.getTime())) return 0;
+
+  const diffHours = (outTs.getTime() - inTs.getTime()) / 3600000;
+  if (!Number.isFinite(diffHours) || diffHours < 0 || diffHours > maxHours) return 0;
+  return Math.round(diffHours * 100) / 100;
+}

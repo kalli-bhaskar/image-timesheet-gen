@@ -82,6 +82,13 @@ function toMetaFallback({ timestamp, locationTag, photoUrl }) {
   };
 }
 
+function getDurationMinutes(startIso, endIso) {
+  const start = new Date(startIso);
+  const end = new Date(endIso);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return null;
+  return Math.round((end.getTime() - start.getTime()) / 60000);
+}
+
 async function submitShiftMetaToBackend({ clockInMeta, clockOutMeta, profile, actor }) {
   const payload = {
     clock_in: clockInMeta,
@@ -294,6 +301,27 @@ export default function ClockAction() {
     }
 
     const timestamp = imageMeta?.timestamp || fallbackTimestamp;
+
+    if (captureFlow?.action === 'out' && activeEntry?.time_in) {
+      const durationMinutes = getDurationMinutes(activeEntry.time_in, timestamp);
+      if (durationMinutes === null) {
+        toast.error('Unable to compute shift duration. Please retake/upload clearer photos.');
+        return;
+      }
+      if (durationMinutes < 0) {
+        toast.error('Clock-out time appears before clock-in. Please upload the correct clock-out image.');
+        return;
+      }
+      if (durationMinutes > 16 * 60) {
+        const missingOcrTimestamp = !imageMeta?.timestamp;
+        toast.error(
+          missingOcrTimestamp
+            ? 'Could not read clock-out timestamp from the image. Re-upload a clearer clock-out photo to avoid inflated hours.'
+            : 'Detected shift is longer than 16 hours. Please verify the uploaded images.'
+        );
+        return;
+      }
+    }
 
     if (captureFlow?.action === 'in') {
       clockInMutation.mutate({ ...data, timestamp, imageMeta });

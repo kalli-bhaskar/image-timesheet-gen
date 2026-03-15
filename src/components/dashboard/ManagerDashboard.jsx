@@ -1,7 +1,7 @@
 import React from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { localClient } from '@/api/localClient';
-import { getWeekRange } from '../timeUtils';
+import { getWeekRange, safeHoursDecimal } from '../timeUtils';
 import EmployeeCard from '../EmployeeCard';
 import PayrollPeriodBadge from '../PayrollPeriodBadge';
 import { Users, TrendingUp } from 'lucide-react';
@@ -26,7 +26,7 @@ export default function ManagerDashboard({ user }) {
         new Date(e.date) >= start &&
         new Date(e.date) <= end
     );
-    const totalHours = weekEntries.reduce((sum, e) => sum + (e.hours_decimal || 0), 0);
+    const totalHours = weekEntries.reduce((sum, e) => sum + safeHoursDecimal(e), 0);
     const estimatedPay = totalHours * (emp.hourly_rate || 0);
     return { ...emp, totalHours, estimatedPay };
   });
