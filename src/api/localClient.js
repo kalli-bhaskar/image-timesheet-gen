@@ -88,11 +88,26 @@ function normalizeUser(raw) {
 
   return {
     ...user,
+    email: String(user.email || '').trim().toLowerCase(),
     full_name: preferredName,
     display_name: preferredName,
     user_role: user.user_role === 'manager' ? 'manager' : 'employee',
     setup_complete: Boolean(user.setup_complete),
+    manager_email: String(user.manager_email || '').trim().toLowerCase(),
+    company_name: String(user.company_name || '').trim(),
+    work_location_tag: String(user.work_location_tag || '').trim().toUpperCase(),
+    data_center_location: String(user.data_center_location || '').trim(),
   };
+}
+
+function readUsers() {
+  const users = readJson(USERS_KEY, []);
+  if (!Array.isArray(users)) return [];
+
+  const normalizedUsers = users.map(normalizeUser);
+  const changed = JSON.stringify(users) !== JSON.stringify(normalizedUsers);
+  if (changed) writeJson(USERS_KEY, normalizedUsers);
+  return normalizedUsers;
 }
 
 function getActiveSession() {
@@ -125,7 +140,7 @@ function ensureCurrentUser(requireSession = true) {
     return stored;
   }
 
-  const users = readJson(USERS_KEY, []);
+  const users = readUsers();
   if (session) {
     const existing = users.find((u) => String(u.email || '').toLowerCase() === String(session.email).toLowerCase());
     if (existing) {
@@ -163,7 +178,7 @@ function currentUser() {
 function setCurrentUser(user) {
   const normalized = normalizeUser(user);
   writeJson(USER_KEY, normalized);
-  const users = readJson(USERS_KEY, []);
+  const users = readUsers();
   const idx = users.findIndex((u) => u.id === normalized.id || u.email === normalized.email);
   if (idx >= 0) users[idx] = normalizeUser({ ...users[idx], ...normalized });
   else users.push(normalized);
@@ -221,7 +236,7 @@ export const localClient = {
       const normalizedEmail = String(email || '').trim().toLowerCase();
       if (!normalizedEmail) throw new Error('Email is required');
 
-      const users = readJson(USERS_KEY, []);
+      const users = readUsers();
       const existingIdx = users.findIndex(
         (u) => String(u.email || '').toLowerCase() === normalizedEmail
       );
@@ -299,13 +314,19 @@ export const localClient = {
     },
     User: {
       async filter(filterObj = {}, sortExpr, limit) {
-        const rows = readJson(USERS_KEY, []);
+        const rows = readUsers();
         const filtered = applyFilter(rows, filterObj);
         const sorted = applySort(filtered, sortExpr);
         return typeof limit === 'number' ? sorted.slice(0, limit) : sorted;
       },
       async update(id, patch) {
-        const updated = updateRecord(USERS_KEY, id, patch);
+        const updated = normalizeUser(updateRecord(USERS_KEY, id, patch));
+        const users = readUsers();
+        const idx = users.findIndex((u) => u.id === updated.id);
+        if (idx >= 0) {
+          users[idx] = updated;
+          writeJson(USERS_KEY, users);
+        }
         if (updated.id === currentUser().id) setCurrentUser(updated);
         return updated;
       },
@@ -314,7 +335,7 @@ export const localClient = {
   users: {
     async inviteUser(email, role = 'employee') {
       const manager = currentUser();
-      const users = readJson(USERS_KEY, []);
+      const users = readUsers();
       const normalized = String(email || '').trim().toLowerCase();
       if (!normalized) throw new Error('Email is required');
       if (users.some((u) => u.email === normalized)) return { success: true, existing: true };
