@@ -799,13 +799,13 @@ def list_users() -> Any:
         where_parts.append('lower(u.email) = %s')
         params.append(email)
     if manager_email:
-        where_parts.append('lower(coalesce(m.email, \''\')) = %s')
+        where_parts.append("lower(coalesce(m.email, '')) = %s")
         params.append(manager_email)
     if user_role:
         where_parts.append('lower(u.user_role) = %s')
         params.append(user_role)
     if customer:
-        where_parts.append('lower(coalesce(nullif(u.customer, \''\'), u.company_name, \''\')) = %s')
+        where_parts.append("lower(coalesce(nullif(u.customer, ''), u.company_name, '')) = %s")
         params.append(customer)
 
     where_sql = f" where {' and '.join(where_parts)}" if where_parts else ''
