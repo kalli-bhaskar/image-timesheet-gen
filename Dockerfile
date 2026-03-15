@@ -13,7 +13,10 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY server.py .
+# Copy app code plus runtime assets used by the backend:
+# - Excel templates in repo root
+# - database/schema.sql bootstrap script
+COPY . .
 
 # Render injects $PORT at runtime; default to 8765 for local docker run
 ENV PORT=8765
