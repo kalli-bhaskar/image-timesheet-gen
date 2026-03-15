@@ -37,7 +37,7 @@ export default function ManagerDashboard({ user }) {
     <div className="p-4 max-w-lg mx-auto space-y-6">
       <div>
         <h1 className="text-2xl font-bold text-slate-900">Dashboard</h1>
-        <p className="text-slate-500 text-sm mt-0.5">{user.company_name}</p>
+        <p className="text-slate-500 text-sm mt-0.5">{user.customer || user.company_name}</p>
       </div>
 
       <PayrollPeriodBadge />

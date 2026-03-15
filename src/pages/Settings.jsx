@@ -71,6 +71,7 @@ export default function Settings() {
 
       if (isManager) {
         payload.company_name = form.company_name.trim();
+        payload.customer = form.company_name.trim();
       } else {
         payload.city_state = form.city_state.trim();
         payload.customer = form.customer.trim() || 'N/A';

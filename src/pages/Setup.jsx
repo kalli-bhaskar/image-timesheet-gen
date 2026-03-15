@@ -68,6 +68,7 @@ export default function Setup() {
 
     if (selectedRole === 'manager') {
       data.company_name = companyName;
+      data.customer = companyName;
     } else {
       data.city_state = cityState || '';
       data.customer = customer || 'N/A';

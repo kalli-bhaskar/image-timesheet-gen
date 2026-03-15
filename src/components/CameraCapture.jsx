@@ -3,6 +3,46 @@ import { Camera, X, Check, RotateCcw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { localClient } from '@/api/localClient';
 
+async function normalizeImageFile(inputFile) {
+  if (!inputFile) return inputFile;
+
+  const type = String(inputFile.type || '').toLowerCase();
+  const alreadySupported = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'].includes(type);
+  if (alreadySupported) return inputFile;
+
+  // Convert HEIC/unknown image formats into JPEG so backend OCR can parse reliably.
+  const objectUrl = URL.createObjectURL(inputFile);
+  try {
+    const img = await new Promise((resolve, reject) => {
+      const image = new Image();
+      image.onload = () => resolve(image);
+      image.onerror = () => reject(new Error('Unable to decode selected image'));
+      image.src = objectUrl;
+    });
+
+    const canvas = document.createElement('canvas');
+    canvas.width = img.naturalWidth || img.width;
+    canvas.height = img.naturalHeight || img.height;
+
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return inputFile;
+    ctx.drawImage(img, 0, 0);
+
+    const blob = await new Promise((resolve) => {
+      canvas.toBlob((b) => resolve(b), 'image/jpeg', 0.92);
+    });
+
+    if (!blob) return inputFile;
+
+    const base = (inputFile.name || 'capture').replace(/\.[^/.]+$/, '');
+    return new File([blob], `${base}.jpg`, { type: 'image/jpeg' });
+  } catch {
+    return inputFile;
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
+}
+
 export default function CameraCapture({ onCapture, onCancel, label, captureMode = 'camera' }) {
   const fileInputRef = useRef(null);
   const [preview, setPreview] = useState(null);
@@ -22,9 +62,15 @@ export default function CameraCapture({ onCapture, onCancel, label, captureMode 
     if (!file) return;
     setUploading(true);
     try {
-      const { file_url } = await localClient.integrations.Core.UploadFile({ file });
+      const normalizedFile = await normalizeImageFile(file);
+      const { file_url } = await localClient.integrations.Core.UploadFile({ file: normalizedFile });
       const timestamp = new Date().toISOString();
-      await onCapture({ photoUrl: file_url, timestamp, file, fileName: file.name });
+      await onCapture({
+        photoUrl: file_url,
+        timestamp,
+        file: normalizedFile,
+        fileName: normalizedFile?.name || file.name,
+      });
     } finally {
       setUploading(false);
     }

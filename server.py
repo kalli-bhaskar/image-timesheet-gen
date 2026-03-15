@@ -420,7 +420,7 @@ def extract_submission_actor(source: Any) -> dict[str, str]:
         'employee_email': get_value('employee_email').lower(),
         'employee_name': get_value('employee_name'),
         'manager_email': get_value('manager_email').lower(),
-        'company_name': get_value('company_name'),
+        'customer': get_value('customer') or get_value('company_name'),
         'work_location_tag': get_value('work_location_tag').upper(),
     }
 
@@ -458,7 +458,7 @@ def persist_shift_to_database(
             break
 
     manager_email = actor.get('manager_email', '').lower()
-    company_name = actor.get('company_name') or None
+    customer_name = actor.get('customer') or profile.get('customer') or None
     employee_name = actor.get('employee_name') or profile.get('full_name') or employee_email.split('@')[0]
     work_location_tag = actor.get('work_location_tag') or None
     status = 'completed' if time_in_dt and time_out_dt else 'clocked_in'
@@ -477,15 +477,16 @@ def persist_shift_to_database(
                     cur.execute(
                         """
                         insert into app_users (
-                          email, full_name, display_name, user_role, setup_complete, company_name
+                          email, full_name, display_name, user_role, setup_complete, company_name, customer
                         )
-                        values (%s, %s, %s, 'manager', true, %s)
+                        values (%s, %s, %s, 'manager', true, %s, %s)
                         on conflict (email) do update
                         set company_name = coalesce(excluded.company_name, app_users.company_name),
+                            customer = coalesce(excluded.customer, app_users.customer),
                             updated_at = now()
                         returning id
                         """,
-                        (manager_email, manager_email.split('@')[0], manager_email.split('@')[0], company_name),
+                        (manager_email, manager_email.split('@')[0], manager_email.split('@')[0], customer_name, customer_name),
                     )
                     row = cur.fetchone()
                     manager_id = row[0] if row else None
@@ -523,9 +524,9 @@ def persist_shift_to_database(
                         employee_name,
                         employee_name,
                         manager_id,
-                        company_name,
+                        customer_name,
                         profile.get('city_state'),
-                        profile.get('customer'),
+                        customer_name,
                         profile.get('classification'),
                         float(profile.get('hourly_rate') or 0),
                         profile.get('per_diem'),
@@ -660,7 +661,7 @@ def upsert_user() -> Any:
     setup_complete = bool(payload.get('setup_complete', False))
     company_name = payload.get('company_name') or None
     city_state = payload.get('city_state') or None
-    customer = payload.get('customer') or None
+    customer = payload.get('customer') or payload.get('company_name') or None
     classification = payload.get('classification') or None
     per_diem = payload.get('per_diem') or None
     accommodation_allowance = payload.get('accommodation_allowance') or None

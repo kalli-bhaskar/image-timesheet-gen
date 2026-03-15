@@ -159,7 +159,7 @@ export default function ClockAction() {
     mutationFn: async ({ photoUrl, timestamp, imageMeta }) => {
       const today = format(new Date(timestamp), 'yyyy-MM-dd');
       const locationTag = imageMeta?.location_tag || '';
-      await localClient.entities.TimesheetEntry.create({
+      return localClient.entities.TimesheetEntry.create({
         employee_email: user.email,
         employee_name: user.display_name || user.full_name || 'N/A',
         date: today,
@@ -196,9 +196,9 @@ export default function ClockAction() {
   });
 
   const clockOutMutation = useMutation({
-    mutationFn: async ({ photoUrl, timestamp, imageMeta }) => {
+    mutationFn: async ({ photoUrl, timestamp, imageMeta, deferBackendSync = false }) => {
       const { totalHours, hoursDecimal } = calculateHours(activeEntry.time_in, timestamp);
-      await localClient.entities.TimesheetEntry.update(activeEntry.id, {
+      const updatedEntry = await localClient.entities.TimesheetEntry.update(activeEntry.id, {
         time_out: timestamp,
         total_hours: totalHours,
         hours_decimal: hoursDecimal,
@@ -207,42 +207,46 @@ export default function ClockAction() {
         status: 'completed',
       });
 
-      const clockInMeta = activeEntry.clock_in_meta || toMetaFallback({
-        timestamp: activeEntry.time_in,
-        locationTag: activeEntry.data_center_location,
-        photoUrl: activeEntry.clock_in_photo_url,
-      });
-      const clockOutMeta = imageMeta || toMetaFallback({
-        timestamp,
-        locationTag: activeEntry.data_center_location,
-        photoUrl,
-      });
-      const profile = {
-        full_name: user.full_name || user.display_name || '',
-        city_state: user.city_state || 'Columbus, OH',
-        customer: user.customer || 'N/A',
-        classification: user.classification || 'N/A',
-        hourly_rate: user.hourly_rate || 0,
-        per_diem: user.per_diem || 'N/A',
-        accommodation_allowance: user.accommodation_allowance || 'N/A',
-        stn_accommodation: user.stn_accommodation || 'N/A',
-        stn_rental: user.stn_rental || 'N/A',
-        stn_gas: user.stn_gas || 'N/A',
-      };
-      const actor = {
-        employee_email: user.email,
-        employee_name: user.display_name || user.full_name || user.email,
-        manager_email: user.manager_email || '',
-        company_name: user.company_name || '',
-        work_location_tag: user.work_location_tag || activeEntry.data_center_location || '',
-      };
+      if (!deferBackendSync) {
+        const clockInMeta = activeEntry.clock_in_meta || toMetaFallback({
+          timestamp: activeEntry.time_in,
+          locationTag: activeEntry.data_center_location,
+          photoUrl: activeEntry.clock_in_photo_url,
+        });
+        const clockOutMeta = imageMeta || toMetaFallback({
+          timestamp,
+          locationTag: activeEntry.data_center_location,
+          photoUrl,
+        });
+        const profile = {
+          full_name: user.full_name || user.display_name || '',
+          city_state: user.city_state || 'Columbus, OH',
+          customer: user.customer || 'N/A',
+          classification: user.classification || 'N/A',
+          hourly_rate: user.hourly_rate || 0,
+          per_diem: user.per_diem || 'N/A',
+          accommodation_allowance: user.accommodation_allowance || 'N/A',
+          stn_accommodation: user.stn_accommodation || 'N/A',
+          stn_rental: user.stn_rental || 'N/A',
+          stn_gas: user.stn_gas || 'N/A',
+        };
+        const actor = {
+          employee_email: user.email,
+          employee_name: user.display_name || user.full_name || user.email,
+          manager_email: user.manager_email || '',
+          customer: user.customer || user.company_name || '',
+          work_location_tag: user.work_location_tag || activeEntry.data_center_location || '',
+        };
 
-      try {
-        await submitShiftMetaToBackend({ clockInMeta, clockOutMeta, profile, actor });
-      } catch (error) {
-        console.error('submit_shift_meta failed', error);
-        toast.warning('Clocked out locally. Backend workbook sync failed for this entry.');
+        try {
+          await submitShiftMetaToBackend({ clockInMeta, clockOutMeta, profile, actor });
+        } catch (error) {
+          console.error('submit_shift_meta failed', error);
+          toast.warning('Clocked out locally. Backend workbook sync failed for this entry.');
+        }
       }
+
+      return updatedEntry;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['my-entries'] });
@@ -254,56 +258,105 @@ export default function ClockAction() {
   });
 
   const handleCapture = async (data) => {
-    const fallbackTimestamp = data.timestamp || new Date().toISOString();
-    let imageMeta = null;
+    const action = captureFlow?.action;
+    if (!action) return;
 
-    try {
-      imageMeta = await analyzeImageWithBackend(data.file);
-    } catch (error) {
-      console.error('analyze failed', error);
-      toast.warning('OCR analyze failed, using local timestamp fallback.');
-    }
+    const mode = captureFlow?.mode;
+    const isUploadMode = mode === 'upload';
 
-    const county = normalizeLocationText(imageMeta?.county);
-    const imageDataCenterLocation = normalizeLocationText(imageMeta?.data_center_location || imageMeta?.location_name);
-    const mappedByCounty = county ? tagContext.countyToTag.get(county) : '';
-    const mappedByCity = imageDataCenterLocation ? tagContext.cityToTag.get(imageDataCenterLocation) : '';
-    const detectedTag = normalizeLocationTag(mappedByCounty || mappedByCity || imageMeta?.location_tag);
-    if (imageMeta) {
-      imageMeta = { ...imageMeta, location_tag: detectedTag || imageMeta.location_tag };
-    }
+    const resolveDetectedTag = (imageMeta) => {
+      const county = normalizeLocationText(imageMeta?.county);
+      const imageDataCenterLocation = normalizeLocationText(imageMeta?.data_center_location || imageMeta?.location_name);
+      const mappedByCounty = county ? tagContext.countyToTag.get(county) : '';
+      const mappedByCity = imageDataCenterLocation ? tagContext.cityToTag.get(imageDataCenterLocation) : '';
+      return normalizeLocationTag(mappedByCounty || mappedByCity || imageMeta?.location_tag);
+    };
 
-    if (captureFlow?.action === 'in') {
-      const directExpectedTag = normalizeLocationTag(
-        pickUserField(user, 'work_location_tag', 'workLocationTag', 'location_tag', 'locationTag')
-      );
-      const expectedDataCenter = pickUserField(user, 'data_center_location', 'dataCenterLocation', 'work_location_name');
-      const expectedCityState = pickUserField(user, 'city_state', 'cityState').split(',')[0] || '';
-      const expectedByDataCenter = tagContext.cityToTag.get(normalizeLocationText(expectedDataCenter));
-      const expectedByCityState = tagContext.cityToTag.get(normalizeLocationText(expectedCityState));
-      const expectedByCounty = tagContext.countyToTag.get(normalizeLocationText(expectedDataCenter));
-      const expectedTag = normalizeLocationTag(
-        directExpectedTag || expectedByDataCenter || expectedByCityState || expectedByCounty
-      );
-      const isExpectedValid = tagContext.activeCodes.has(expectedTag);
+    // Upload mode must trust only overlay OCR timestamp (not filename/metadata/fallback time).
+    if (isUploadMode) {
+      let imageMeta = null;
+      try {
+        imageMeta = await analyzeImageWithBackend(data.file);
+      } catch (error) {
+        console.error('analyze failed', error);
+      }
 
-      if (!expectedTag) {
-        // Do not block if the user's expected location tag was never configured.
-        toast.warning('Your expected work location tag is not configured yet. Clock-in allowed for now.');
-      } else if (!isExpectedValid || !detectedTag || detectedTag !== expectedTag) {
-        setCaptureFlow(null);
-        setLocationMismatch({
-          expectedTag: expectedTag || 'NOT SET',
-          detectedTag: detectedTag || 'NOT DETECTED',
-        });
+      const ocrTimestamp = imageMeta?.timestamp;
+      if (!ocrTimestamp) {
+        toast.error('Could not read overlay timestamp from uploaded image. Please upload a clearer screenshot/photo.');
         return;
       }
+
+      const detectedTag = resolveDetectedTag(imageMeta);
+      if (imageMeta) {
+        imageMeta = { ...imageMeta, location_tag: detectedTag || imageMeta.location_tag };
+      }
+
+      if (action === 'in') {
+        const directExpectedTag = normalizeLocationTag(
+          pickUserField(user, 'work_location_tag', 'workLocationTag', 'location_tag', 'locationTag')
+        );
+        const expectedDataCenter = pickUserField(user, 'data_center_location', 'dataCenterLocation', 'work_location_name');
+        const expectedCityState = pickUserField(user, 'city_state', 'cityState').split(',')[0] || '';
+        const expectedByDataCenter = tagContext.cityToTag.get(normalizeLocationText(expectedDataCenter));
+        const expectedByCityState = tagContext.cityToTag.get(normalizeLocationText(expectedCityState));
+        const expectedByCounty = tagContext.countyToTag.get(normalizeLocationText(expectedDataCenter));
+        const expectedTag = normalizeLocationTag(
+          directExpectedTag || expectedByDataCenter || expectedByCityState || expectedByCounty
+        );
+        const isExpectedValid = tagContext.activeCodes.has(expectedTag);
+
+        if (!expectedTag) {
+          toast.warning('Your expected work location tag is not configured yet. Clock-in allowed for now.');
+        } else if (!isExpectedValid || !detectedTag || detectedTag !== expectedTag) {
+          setCaptureFlow(null);
+          setLocationMismatch({
+            expectedTag: expectedTag || 'NOT SET',
+            detectedTag: detectedTag || 'NOT DETECTED',
+          });
+          return;
+        }
+      }
+
+      if (action === 'out' && activeEntry?.time_in) {
+        const durationMinutes = getDurationMinutes(activeEntry.time_in, ocrTimestamp);
+        if (durationMinutes === null) {
+          toast.error('Unable to compute shift duration. Please retake/upload clearer photos.');
+          return;
+        }
+        if (durationMinutes < 0) {
+          toast.error('Clock-out time appears before clock-in. Please upload the correct clock-out image.');
+          return;
+        }
+        if (durationMinutes > 16 * 60) {
+          toast.error('Detected shift is longer than 16 hours. Please verify the uploaded images.');
+          return;
+        }
+      }
+
+      try {
+        if (action === 'in') {
+          await clockInMutation.mutateAsync({ ...data, timestamp: ocrTimestamp, imageMeta });
+        } else {
+          await clockOutMutation.mutateAsync({ ...data, timestamp: ocrTimestamp, imageMeta, deferBackendSync: false });
+        }
+      } catch (error) {
+        console.error('capture failed', error);
+        toast.error('Unable to record this clock event. Please try again.');
+      }
+      return;
     }
 
-    const timestamp = imageMeta?.timestamp || fallbackTimestamp;
+    const fallbackTimestamp = data.timestamp || new Date().toISOString();
+    const optimisticLocationTag = action === 'out' ? activeEntry?.data_center_location || '' : '';
+    const optimisticMeta = toMetaFallback({
+      timestamp: fallbackTimestamp,
+      locationTag: optimisticLocationTag,
+      photoUrl: data.photoUrl,
+    });
 
-    if (captureFlow?.action === 'out' && activeEntry?.time_in) {
-      const durationMinutes = getDurationMinutes(activeEntry.time_in, timestamp);
+    if (action === 'out' && activeEntry?.time_in) {
+      const durationMinutes = getDurationMinutes(activeEntry.time_in, fallbackTimestamp);
       if (durationMinutes === null) {
         toast.error('Unable to compute shift duration. Please retake/upload clearer photos.');
         return;
@@ -313,20 +366,133 @@ export default function ClockAction() {
         return;
       }
       if (durationMinutes > 16 * 60) {
-        const missingOcrTimestamp = !imageMeta?.timestamp;
-        toast.error(
-          missingOcrTimestamp
-            ? 'Could not read clock-out timestamp from the image. Re-upload a clearer clock-out photo to avoid inflated hours.'
-            : 'Detected shift is longer than 16 hours. Please verify the uploaded images.'
-        );
+        toast.error('Detected shift is longer than 16 hours. Please verify the uploaded images.');
         return;
       }
     }
 
-    if (captureFlow?.action === 'in') {
-      clockInMutation.mutate({ ...data, timestamp, imageMeta });
-    } else {
-      clockOutMutation.mutate({ ...data, timestamp, imageMeta });
+    try {
+      if (action === 'in') {
+        const createdEntry = await clockInMutation.mutateAsync({ ...data, timestamp: fallbackTimestamp, imageMeta: optimisticMeta });
+        toast.message('Clock-in recorded. OCR details will sync in the background.');
+
+        // OCR enrichment runs in background so clock-in appears instantly on dashboard.
+        void (async () => {
+          let imageMeta = null;
+          try {
+            imageMeta = await analyzeImageWithBackend(data.file);
+          } catch (error) {
+            console.error('background analyze failed', error);
+          }
+
+          if (!imageMeta || !createdEntry?.id) return;
+
+          const county = normalizeLocationText(imageMeta?.county);
+          const imageDataCenterLocation = normalizeLocationText(imageMeta?.data_center_location || imageMeta?.location_name);
+          const mappedByCounty = county ? tagContext.countyToTag.get(county) : '';
+          const mappedByCity = imageDataCenterLocation ? tagContext.cityToTag.get(imageDataCenterLocation) : '';
+          const detectedTag = normalizeLocationTag(mappedByCounty || mappedByCity || imageMeta?.location_tag);
+          const finalMeta = { ...imageMeta, location_tag: detectedTag || imageMeta.location_tag };
+          const finalTimestamp = finalMeta.timestamp || fallbackTimestamp;
+
+          const directExpectedTag = normalizeLocationTag(
+            pickUserField(user, 'work_location_tag', 'workLocationTag', 'location_tag', 'locationTag')
+          );
+          const expectedDataCenter = pickUserField(user, 'data_center_location', 'dataCenterLocation', 'work_location_name');
+          const expectedCityState = pickUserField(user, 'city_state', 'cityState').split(',')[0] || '';
+          const expectedByDataCenter = tagContext.cityToTag.get(normalizeLocationText(expectedDataCenter));
+          const expectedByCityState = tagContext.cityToTag.get(normalizeLocationText(expectedCityState));
+          const expectedByCounty = tagContext.countyToTag.get(normalizeLocationText(expectedDataCenter));
+          const expectedTag = normalizeLocationTag(
+            directExpectedTag || expectedByDataCenter || expectedByCityState || expectedByCounty
+          );
+          if (expectedTag && detectedTag && detectedTag !== expectedTag) {
+            toast.warning(`Clock-in location mismatch detected (${detectedTag} vs expected ${expectedTag}).`);
+          }
+
+          await localClient.entities.TimesheetEntry.update(createdEntry.id, {
+            time_in: finalTimestamp,
+            date: format(new Date(finalTimestamp), 'yyyy-MM-dd'),
+            payroll_period: getPayrollPeriod(finalTimestamp),
+            data_center_location: detectedTag || createdEntry.data_center_location,
+            location_source: detectedTag ? 'backend_ocr' : 'image_metadata_pending',
+            clock_in_meta: finalMeta,
+          });
+          queryClient.invalidateQueries({ queryKey: ['my-entries'] });
+        })();
+      } else {
+        await clockOutMutation.mutateAsync({
+          ...data,
+          timestamp: fallbackTimestamp,
+          imageMeta: optimisticMeta,
+          deferBackendSync: true,
+        });
+        toast.message('Clock-out recorded. OCR + backend sync are running in the background.');
+
+        // OCR + backend sync runs in background after immediate UI update.
+        void (async () => {
+          let imageMeta = null;
+          try {
+            imageMeta = await analyzeImageWithBackend(data.file);
+          } catch (error) {
+            console.error('background analyze failed', error);
+          }
+
+          const county = normalizeLocationText(imageMeta?.county);
+          const imageDataCenterLocation = normalizeLocationText(imageMeta?.data_center_location || imageMeta?.location_name);
+          const mappedByCounty = county ? tagContext.countyToTag.get(county) : '';
+          const mappedByCity = imageDataCenterLocation ? tagContext.cityToTag.get(imageDataCenterLocation) : '';
+          const detectedTag = normalizeLocationTag(mappedByCounty || mappedByCity || imageMeta?.location_tag || activeEntry?.data_center_location);
+          const clockOutMeta = imageMeta ? { ...imageMeta, location_tag: detectedTag || imageMeta.location_tag } : optimisticMeta;
+          const finalTimestamp = clockOutMeta?.timestamp || fallbackTimestamp;
+
+          const { totalHours, hoursDecimal } = calculateHours(activeEntry.time_in, finalTimestamp);
+          await localClient.entities.TimesheetEntry.update(activeEntry.id, {
+            time_out: finalTimestamp,
+            total_hours: totalHours,
+            hours_decimal: hoursDecimal,
+            data_center_location: detectedTag || activeEntry.data_center_location,
+            clock_out_meta: clockOutMeta,
+          });
+
+          const clockInMeta = activeEntry.clock_in_meta || toMetaFallback({
+            timestamp: activeEntry.time_in,
+            locationTag: activeEntry.data_center_location,
+            photoUrl: activeEntry.clock_in_photo_url,
+          });
+          const profile = {
+            full_name: user.full_name || user.display_name || '',
+            city_state: user.city_state || 'Columbus, OH',
+            customer: user.customer || 'N/A',
+            classification: user.classification || 'N/A',
+            hourly_rate: user.hourly_rate || 0,
+            per_diem: user.per_diem || 'N/A',
+            accommodation_allowance: user.accommodation_allowance || 'N/A',
+            stn_accommodation: user.stn_accommodation || 'N/A',
+            stn_rental: user.stn_rental || 'N/A',
+            stn_gas: user.stn_gas || 'N/A',
+          };
+          const actor = {
+            employee_email: user.email,
+            employee_name: user.display_name || user.full_name || user.email,
+            manager_email: user.manager_email || '',
+            customer: user.customer || user.company_name || '',
+            work_location_tag: user.work_location_tag || activeEntry.data_center_location || '',
+          };
+
+          try {
+            await submitShiftMetaToBackend({ clockInMeta, clockOutMeta, profile, actor });
+          } catch (error) {
+            console.error('submit_shift_meta (background) failed', error);
+            toast.warning('Clocked out instantly, but backend OCR sync failed.');
+          }
+
+          queryClient.invalidateQueries({ queryKey: ['my-entries'] });
+        })();
+      }
+    } catch (error) {
+      console.error('capture failed', error);
+      toast.error('Unable to record this clock event. Please try again.');
     }
   };
 

@@ -30,6 +30,7 @@ function matchesEmployeeSearch(employee, query) {
     employee?.full_name,
     employee?.display_name,
     employee?.email,
+    employee?.customer,
     employee?.company_name,
   ];
 
@@ -95,9 +96,11 @@ export default function Employees() {
 
   const handleAssignToMe = async (employee) => {
     if (!employee?.id) return;
+    const managerCustomer = user.customer || user.company_name || employee.customer || employee.company_name || '';
     await localClient.entities.User.update(employee.id, {
       manager_email: user.email,
-      company_name: user.company_name || employee.company_name || '',
+      customer: managerCustomer,
+      company_name: managerCustomer,
     });
     toast.success(`${employee.full_name} added to your team`);
     queryClient.invalidateQueries({ queryKey: ['managed-users'] });
@@ -144,11 +147,16 @@ export default function Employees() {
 
   const filtered = employees.filter((employee) => matchesEmployeeSearch(employee, search));
 
-  const normalizedManagerCompany = normalizeSearchValue(user.company_name);
+  const managerCustomerLabel = user.customer || user.company_name || '';
+  const normalizedManagerCustomer = normalizeSearchValue(managerCustomerLabel);
 
   const companyCandidates = allEmployees
     .filter((employee) => employee.user_role === 'employee')
-    .filter((employee) => !normalizedManagerCompany || normalizeSearchValue(employee.company_name) === normalizedManagerCompany)
+    .filter(
+      (employee) =>
+        !normalizedManagerCustomer
+        || normalizeSearchValue(employee.customer || employee.company_name) === normalizedManagerCustomer
+    )
     .filter((e) => e.id !== user.id)
     .filter((e) => (e.manager_email || '') !== user.email)
     .filter((employee) => matchesEmployeeSearch(employee, companySearch));
@@ -237,9 +245,9 @@ export default function Employees() {
         </div>
       </div>
 
-      {user.company_name && (
+      {managerCustomerLabel && (
         <div className="bg-white rounded-2xl p-4 border border-slate-100 space-y-3">
-          <p className="text-sm font-medium text-slate-700">Search Employees In {user.company_name}</p>
+          <p className="text-sm font-medium text-slate-700">Search Employees In {managerCustomerLabel}</p>
           <Input
             value={companySearch}
             onChange={(e) => setCompanySearch(e.target.value)}
