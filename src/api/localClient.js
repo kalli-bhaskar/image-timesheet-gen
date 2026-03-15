@@ -311,6 +311,36 @@ export const localClient = {
         updated_date: new Date().toISOString(),
       });
       setCurrentUser(next);
+
+      // Persist to DB — fire and forget (don't block or throw on failure)
+      try {
+        await fetch(`${BACKEND_BASE_URL}/user`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            email: next.email,
+            full_name: next.full_name,
+            display_name: next.display_name,
+            user_role: next.user_role,
+            setup_complete: next.setup_complete,
+            company_name: next.company_name || null,
+            city_state: next.city_state || null,
+            manager_email: next.manager_email || null,
+            work_location_tag: next.work_location_tag || null,
+            customer: next.customer || null,
+            classification: next.classification || null,
+            hourly_rate: next.hourly_rate || 0,
+            per_diem: next.per_diem || null,
+            accommodation_allowance: next.accommodation_allowance || null,
+            stn_accommodation: next.stn_accommodation || null,
+            stn_rental: next.stn_rental || null,
+            stn_gas: next.stn_gas || null,
+          }),
+        });
+      } catch {
+        // Backend unavailable — local save already succeeded.
+      }
+
       return next;
     },
     logout(redirectUrl) {

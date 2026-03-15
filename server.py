@@ -643,6 +643,95 @@ def clear_entries() -> Any:
         return jsonify({'cleared': 0, 'error': str(exc)}), 200
 
 
+@app.route('/user', methods=['POST'])
+def upsert_user() -> Any:
+    """Create or update a user record from the frontend profile/setup data."""
+    payload = request.get_json(silent=True) or {}
+    email = str(payload.get('email') or '').strip().lower()
+    if not email:
+        return jsonify({'error': 'email required'}), 400
+
+    if not DB_ENABLED:
+        return jsonify({'saved': False, 'reason': 'db_disabled'}), 200
+
+    full_name = str(payload.get('full_name') or '').strip() or email.split('@')[0]
+    display_name = str(payload.get('display_name') or full_name).strip()
+    user_role = 'manager' if str(payload.get('user_role') or '').strip().lower() == 'manager' else 'employee'
+    setup_complete = bool(payload.get('setup_complete', False))
+    company_name = payload.get('company_name') or None
+    city_state = payload.get('city_state') or None
+    customer = payload.get('customer') or None
+    classification = payload.get('classification') or None
+    per_diem = payload.get('per_diem') or None
+    accommodation_allowance = payload.get('accommodation_allowance') or None
+    stn_accommodation = payload.get('stn_accommodation') or None
+    stn_rental = payload.get('stn_rental') or None
+    stn_gas = payload.get('stn_gas') or None
+    manager_email = str(payload.get('manager_email') or '').strip().lower() or None
+    try:
+        hourly_rate = float(payload.get('hourly_rate') or 0)
+    except (TypeError, ValueError):
+        hourly_rate = 0.0
+    raw_tag = str(payload.get('work_location_tag') or '').strip().upper() or None
+
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute('SELECT tag FROM location_tags')
+                valid_tags = {row[0] for row in cur.fetchall()}
+                work_location_tag = raw_tag if raw_tag in valid_tags else None
+
+                manager_id = None
+                if manager_email:
+                    cur.execute('SELECT id FROM app_users WHERE email = %s', (manager_email,))
+                    mrow = cur.fetchone()
+                    manager_id = mrow[0] if mrow else None
+
+                cur.execute(
+                    """
+                    INSERT INTO app_users (
+                      email, full_name, display_name, user_role, setup_complete,
+                      company_name, city_state, customer, classification,
+                      hourly_rate, per_diem, accommodation_allowance,
+                      stn_accommodation, stn_rental, stn_gas,
+                      work_location_tag, manager_id
+                    )
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    ON CONFLICT (email) DO UPDATE SET
+                      full_name             = EXCLUDED.full_name,
+                      display_name          = EXCLUDED.display_name,
+                      user_role             = EXCLUDED.user_role,
+                      setup_complete        = EXCLUDED.setup_complete,
+                      company_name          = COALESCE(EXCLUDED.company_name, app_users.company_name),
+                      city_state            = COALESCE(EXCLUDED.city_state, app_users.city_state),
+                      customer              = COALESCE(EXCLUDED.customer, app_users.customer),
+                      classification        = COALESCE(EXCLUDED.classification, app_users.classification),
+                      hourly_rate           = EXCLUDED.hourly_rate,
+                      per_diem              = COALESCE(EXCLUDED.per_diem, app_users.per_diem),
+                      accommodation_allowance = COALESCE(EXCLUDED.accommodation_allowance, app_users.accommodation_allowance),
+                      stn_accommodation     = COALESCE(EXCLUDED.stn_accommodation, app_users.stn_accommodation),
+                      stn_rental            = COALESCE(EXCLUDED.stn_rental, app_users.stn_rental),
+                      stn_gas               = COALESCE(EXCLUDED.stn_gas, app_users.stn_gas),
+                      work_location_tag     = COALESCE(EXCLUDED.work_location_tag, app_users.work_location_tag),
+                      manager_id            = COALESCE(EXCLUDED.manager_id, app_users.manager_id),
+                      updated_at            = now()
+                    RETURNING id
+                    """,
+                    (
+                        email, full_name, display_name, user_role, setup_complete,
+                        company_name, city_state, customer, classification,
+                        hourly_rate, per_diem, accommodation_allowance,
+                        stn_accommodation, stn_rental, stn_gas,
+                        work_location_tag, manager_id,
+                    ),
+                )
+                urow = cur.fetchone()
+            conn.commit()
+        return jsonify({'saved': True, 'id': str(urow[0]) if urow else None}), 200
+    except Exception as exc:
+        return jsonify({'saved': False, 'error': str(exc)}), 200
+
+
 @app.route('/user', methods=['GET'])
 def get_user() -> Any:
     email = request.args.get('email', '').strip().lower()
