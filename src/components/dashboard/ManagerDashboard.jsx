@@ -7,6 +7,8 @@ import PayrollPeriodBadge from '../PayrollPeriodBadge';
 import { Users, TrendingUp } from 'lucide-react';
 
 export default function ManagerDashboard({ user }) {
+  const firstName = (user.display_name || user.full_name || '').split(' ')[0] || 'there';
+
   const { data: allUsers = [] } = useQuery({
     queryKey: ['managed-users'],
     queryFn: () => localClient.entities.User.filter({ manager_email: user.email, user_role: 'employee' }),
@@ -36,8 +38,10 @@ export default function ManagerDashboard({ user }) {
   return (
     <div className="p-4 max-w-lg mx-auto space-y-6">
       <div>
-        <h1 className="text-2xl font-bold text-slate-900">Dashboard</h1>
-        <p className="text-slate-500 text-sm mt-0.5">{user.customer || user.company_name}</p>
+        <h1 className="text-2xl font-bold text-slate-900">Hi, {firstName}</h1>
+        <p className="text-slate-500 text-sm mt-0.5">
+          {user.customer || user.company_name || "Here's your team at a glance"}
+        </p>
       </div>
 
       <PayrollPeriodBadge />
