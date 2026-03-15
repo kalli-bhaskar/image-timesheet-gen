@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: image-timesheet-gen-backend
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+    healthCheckPath: /health

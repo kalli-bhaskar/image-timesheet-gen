@@ -1,0 +1,15 @@
+# Node / frontend build artifacts
+node_modules/
+dist/
+.venv/
+
+# Local env and secrets
+.env*
+uploads/
+
+# Dev tools
+start-dev.sh
+*.jpeg
+*.jpg
+*.png
+*.xlsx
