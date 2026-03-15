@@ -54,6 +54,26 @@ function pickUserField(user, ...keys) {
   return '';
 }
 
+function getAllowedLocationTags(user, tagContext) {
+  const rawConfigured = pickUserField(user, 'work_location_tag', 'workLocationTag', 'location_tag', 'locationTag');
+  const directTags = String(rawConfigured || '')
+    .split(/[\s,;/|]+/)
+    .map((v) => normalizeLocationTag(v))
+    .filter(Boolean);
+
+  const expectedDataCenter = pickUserField(user, 'data_center_location', 'dataCenterLocation', 'work_location_name');
+  const expectedCityState = pickUserField(user, 'city_state', 'cityState').split(',')[0] || '';
+  const inferredTags = [
+    tagContext.cityToTag.get(normalizeLocationText(expectedDataCenter)),
+    tagContext.cityToTag.get(normalizeLocationText(expectedCityState)),
+    tagContext.countyToTag.get(normalizeLocationText(expectedDataCenter)),
+  ]
+    .map((v) => normalizeLocationTag(v))
+    .filter(Boolean);
+
+  return new Set([...directTags, ...inferredTags]);
+}
+
 async function analyzeImageWithBackend(file) {
   if (!file) return null;
   const formData = new FormData();
@@ -150,6 +170,13 @@ export default function ClockAction() {
     queryKey: ['location-tags'],
     queryFn: () => localClient.locationTags.list({ includeInactive: false }),
   });
+
+  const { data: managerUsers = [] } = useQuery({
+    queryKey: ['manager-profile', user.manager_email],
+    queryFn: () => localClient.entities.User.filter({ email: user.manager_email }),
+    enabled: !!user.manager_email,
+  });
+  const locationEnforcementEnabled = managerUsers[0]?.location_enforcement_enabled ?? false;
 
   const tagContext = useMemo(() => {
     const activeCodes = new Set(locationTags.map((tag) => normalizeLocationTag(tag.code)).filter(Boolean));
@@ -326,28 +353,16 @@ export default function ClockAction() {
       }
 
       if (action === 'in') {
-        const directExpectedTag = normalizeLocationTag(
-          pickUserField(user, 'work_location_tag', 'workLocationTag', 'location_tag', 'locationTag')
-        );
-        const expectedDataCenter = pickUserField(user, 'data_center_location', 'dataCenterLocation', 'work_location_name');
-        const expectedCityState = pickUserField(user, 'city_state', 'cityState').split(',')[0] || '';
-        const expectedByDataCenter = tagContext.cityToTag.get(normalizeLocationText(expectedDataCenter));
-        const expectedByCityState = tagContext.cityToTag.get(normalizeLocationText(expectedCityState));
-        const expectedByCounty = tagContext.countyToTag.get(normalizeLocationText(expectedDataCenter));
-        const expectedTag = normalizeLocationTag(
-          directExpectedTag || expectedByDataCenter || expectedByCityState || expectedByCounty
-        );
-        const isExpectedValid = tagContext.activeCodes.has(expectedTag);
+        if (locationEnforcementEnabled) {
+          const allowedTags = getAllowedLocationTags(user, tagContext);
+          const activeAllowed = [...allowedTags].filter((tag) => tagContext.activeCodes.has(tag));
 
-        if (!expectedTag) {
-          toast.warning('Your expected work location tag is not configured yet. Clock-in allowed for now.');
-        } else if (!isExpectedValid || !detectedTag || detectedTag !== expectedTag) {
-          setCaptureFlow(null);
-          setLocationMismatch({
-            expectedTag: expectedTag || 'NOT SET',
-            detectedTag: detectedTag || 'NOT DETECTED',
-          });
-          return;
+          if (activeAllowed.length === 0) {
+            toast.warning('Your expected work location tag is not configured yet. Clock-in allowed for now.');
+          } else if (!detectedTag || !activeAllowed.includes(detectedTag)) {
+            // Uploads can be delayed/shared screenshots, so warn instead of blocking.
+            toast.warning(`Uploaded location tag ${detectedTag || 'NOT DETECTED'} did not match allowed tag(s): ${activeAllowed.join(', ')}.`);
+          }
         }
       }
 
@@ -475,19 +490,10 @@ export default function ClockAction() {
           const finalMeta = { ...imageMeta, location_tag: detectedTag || imageMeta.location_tag };
           const finalTimestamp = finalMeta.timestamp || fallbackTimestamp;
 
-          const directExpectedTag = normalizeLocationTag(
-            pickUserField(user, 'work_location_tag', 'workLocationTag', 'location_tag', 'locationTag')
-          );
-          const expectedDataCenter = pickUserField(user, 'data_center_location', 'dataCenterLocation', 'work_location_name');
-          const expectedCityState = pickUserField(user, 'city_state', 'cityState').split(',')[0] || '';
-          const expectedByDataCenter = tagContext.cityToTag.get(normalizeLocationText(expectedDataCenter));
-          const expectedByCityState = tagContext.cityToTag.get(normalizeLocationText(expectedCityState));
-          const expectedByCounty = tagContext.countyToTag.get(normalizeLocationText(expectedDataCenter));
-          const expectedTag = normalizeLocationTag(
-            directExpectedTag || expectedByDataCenter || expectedByCityState || expectedByCounty
-          );
-          if (expectedTag && detectedTag && detectedTag !== expectedTag) {
-            toast.warning(`Clock-in location mismatch detected (${detectedTag} vs expected ${expectedTag}).`);
+          const allowedTags = getAllowedLocationTags(user, tagContext);
+          const activeAllowed = [...allowedTags].filter((tag) => tagContext.activeCodes.has(tag));
+          if (locationEnforcementEnabled && activeAllowed.length > 0 && detectedTag && !activeAllowed.includes(detectedTag)) {
+            toast.warning(`Clock-in location mismatch detected (${detectedTag} vs allowed ${activeAllowed.join(', ')}).`);
           }
 
           await localClient.entities.TimesheetEntry.update(createdEntry.id, {

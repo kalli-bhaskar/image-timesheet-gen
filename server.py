@@ -274,17 +274,45 @@ def run_fast_ocr(image: Image.Image) -> str:
     return ' '.join(fallback.split())
 
 
-def run_ocr_with_fallbacks(image: Image.Image) -> tuple[str, str]:
-    # Priority order: Gemini -> PaddleOCR -> Tesseract
-    gemini_text = run_gemini_ocr(image)
-    if gemini_text:
-        return gemini_text, 'gemini'
+def run_ocr_with_fallbacks(
+    image: Image.Image,
+    full_image: Image.Image | None = None,
+) -> tuple[str, str]:
+    """Try each OCR engine in priority order.  Prefer results that contain a
+    parseable timestamp; fall through to the next engine if the current one
+    returns text with no timestamp pattern.  Keeps the best non-empty result
+    as a fallback for county/tag extraction.
+    Gemini receives the full original image when available — neural models
+    benefit from colour and full context rather than the greyscale crop.
+    """
+    best: tuple[str, str] = ('', 'none')
 
+    # 1. Gemini — use full image for better context
+    gemini_input = full_image if full_image is not None else image
+    gemini_text = run_gemini_ocr(gemini_input)
+    if gemini_text:
+        if TIMESTAMP_RE.search(gemini_text):
+            return gemini_text, 'gemini'
+        if not best[0]:
+            best = (gemini_text, 'gemini')
+
+    # 2. PaddleOCR — works on the preprocessed crop
     paddle_text = run_paddle_ocr(image)
     if paddle_text:
-        return paddle_text, 'paddle'
+        if TIMESTAMP_RE.search(paddle_text):
+            return paddle_text, 'paddle'
+        if not best[0]:
+            best = (paddle_text, 'paddle')
 
-    return run_fast_ocr(image), 'tesseract'
+    # 3. Tesseract — works on the preprocessed crop
+    tess_text = run_fast_ocr(image)
+    if TIMESTAMP_RE.search(tess_text):
+        return tess_text, 'tesseract'
+    if tess_text and not best[0]:
+        best = (tess_text, 'tesseract')
+
+    # Return best non-empty result for county/tag even if no timestamp found
+    return best
 
 
 def parse_timestamp(ocr_text: str) -> datetime | None:
@@ -358,11 +386,24 @@ def sanitize_tag(value: str | None, valid_tags: set[str] | None = None) -> str |
 def analyze_image_bytes(image_bytes: bytes, filename: str) -> dict[str, Any]:
     with Image.open(BytesIO(image_bytes)) as image:
         source_size = image.size
+        # Keep a full-resolution copy for Gemini (neural models need colour/context)
+        full_copy = image.convert('RGB')
         cropped = crop_bottom_right_half(image)
         prepared = preprocess_for_ocr(cropped)
-        ocr_text, ocr_engine = run_ocr_with_fallbacks(prepared)
+        ocr_text, ocr_engine = run_ocr_with_fallbacks(prepared, full_image=full_copy)
 
     timestamp = parse_timestamp(ocr_text)
+
+    # Last-resort retry: full image through Tesseract when crop-based OCR missed
+    crop_strategy = 'bottom-right-half'
+    if timestamp is None and ocr_engine != 'gemini':
+        full_prepared = preprocess_for_ocr(full_copy)
+        retry_text = run_fast_ocr(full_prepared)
+        retry_ts = parse_timestamp(retry_text)
+        if retry_ts:
+            ocr_text, ocr_engine, timestamp = retry_text, 'tesseract-full', retry_ts
+            crop_strategy = 'full-image-retry'
+
     county = parse_county(ocr_text)
     location_tag = determine_location_tag(county)
     data_center_location = TAG_TO_DATA_CENTER.get(location_tag, '')
@@ -378,7 +419,7 @@ def analyze_image_bytes(image_bytes: bytes, filename: str) -> dict[str, Any]:
         'data_center_location': data_center_location,
         'crop': {
             'source_size': list(source_size),
-            'strategy': 'bottom-right-half',
+            'strategy': crop_strategy,
         },
     }
 
@@ -846,6 +887,7 @@ def upsert_user() -> Any:
     except (TypeError, ValueError):
         hourly_rate = 0.0
     raw_tag = str(payload.get('work_location_tag') or '').strip().upper() or None
+    location_enforcement_enabled = bool(payload.get('location_enforcement_enabled') or False)
 
     try:
         with get_db_connection() as conn:
@@ -867,9 +909,9 @@ def upsert_user() -> Any:
                       company_name, city_state, customer, classification,
                       hourly_rate, per_diem, accommodation_allowance,
                       stn_accommodation, stn_rental, stn_gas,
-                      work_location_tag, manager_id
+                      work_location_tag, manager_id, location_enforcement_enabled
                     )
-                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                     ON CONFLICT (email) DO UPDATE SET
                       full_name             = EXCLUDED.full_name,
                       display_name          = EXCLUDED.display_name,
@@ -887,6 +929,7 @@ def upsert_user() -> Any:
                       stn_gas               = COALESCE(EXCLUDED.stn_gas, app_users.stn_gas),
                       work_location_tag     = COALESCE(EXCLUDED.work_location_tag, app_users.work_location_tag),
                       manager_id            = COALESCE(EXCLUDED.manager_id, app_users.manager_id),
+                      location_enforcement_enabled = EXCLUDED.location_enforcement_enabled,
                       updated_at            = now()
                     RETURNING id
                     """,
@@ -895,7 +938,7 @@ def upsert_user() -> Any:
                         company_name, city_state, customer, classification,
                         hourly_rate, per_diem, accommodation_allowance,
                         stn_accommodation, stn_rental, stn_gas,
-                        work_location_tag, manager_id,
+                        work_location_tag, manager_id, location_enforcement_enabled,
                     ),
                 )
                 urow = cur.fetchone()
@@ -923,7 +966,7 @@ def get_user() -> Any:
                            u.company_name, u.city_state, u.work_location_tag, u.manager_id,
                            u.customer, u.classification, u.hourly_rate, u.per_diem,
                            u.accommodation_allowance, u.stn_accommodation, u.stn_rental, u.stn_gas,
-                           m.email AS manager_email
+                           m.email AS manager_email, u.location_enforcement_enabled
                     FROM app_users u
                     LEFT JOIN app_users m ON m.id = u.manager_id
                     WHERE u.email = %s
@@ -940,7 +983,7 @@ def get_user() -> Any:
             'company_name', 'city_state', 'work_location_tag', 'manager_id',
             'customer', 'classification', 'hourly_rate', 'per_diem',
             'accommodation_allowance', 'stn_accommodation', 'stn_rental', 'stn_gas',
-            'manager_email',
+            'manager_email', 'location_enforcement_enabled',
         ]
         user = dict(zip(col_names, row))
         user['id'] = str(user['id']) if user['id'] else None
@@ -1005,7 +1048,8 @@ def list_users() -> Any:
                       u.accommodation_allowance,
                       u.stn_accommodation,
                       u.stn_rental,
-                      u.stn_gas
+                      u.stn_gas,
+                      u.location_enforcement_enabled
                     FROM app_users u
                     LEFT JOIN app_users m ON m.id = u.manager_id
                     {where_sql}
@@ -1037,6 +1081,7 @@ def list_users() -> Any:
                     'stn_accommodation': row[15] or '',
                     'stn_rental': row[16] or '',
                     'stn_gas': row[17] or '',
+                    'location_enforcement_enabled': bool(row[18]) if row[18] is not None else False,
                 }
             )
 

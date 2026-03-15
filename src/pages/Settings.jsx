@@ -43,6 +43,7 @@ export default function Settings() {
       stn_rental: user?.stn_rental || '',
       stn_gas: user?.stn_gas || '',
       company_name: user?.company_name || '',
+      location_enforcement_enabled: user?.location_enforcement_enabled ?? false,
     }),
     [user]
   );
@@ -72,6 +73,7 @@ export default function Settings() {
       if (isManager) {
         payload.company_name = form.company_name.trim();
         payload.customer = form.company_name.trim();
+        payload.location_enforcement_enabled = form.location_enforcement_enabled;
       } else {
         payload.city_state = form.city_state.trim();
         payload.customer = form.customer.trim() || 'N/A';
@@ -149,14 +151,35 @@ export default function Settings() {
           </Field>
 
           {isManager ? (
-            <Field label="Company Name">
-              <Input
-                value={form.company_name}
-                onChange={(e) => setField('company_name', e.target.value)}
-                placeholder="Acme Corp"
-                className={inputClass}
-              />
-            </Field>
+            <>
+              <Field label="Company Name">
+                <Input
+                  value={form.company_name}
+                  onChange={(e) => setField('company_name', e.target.value)}
+                  placeholder="Acme Corp"
+                  className={inputClass}
+                />
+              </Field>
+              <div className="flex items-center justify-between py-2">
+                <div>
+                  <p className="text-sm font-medium text-slate-700">Location Enforcement</p>
+                  <p className="text-xs text-slate-500">Warn employees when clocked in from unexpected location tags (NBY, CLB, LCT)</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setField('location_enforcement_enabled', !form.location_enforcement_enabled)}
+                  className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none ${
+                    form.location_enforcement_enabled ? 'bg-blue-600' : 'bg-slate-300'
+                  }`}
+                >
+                  <span
+                    className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+                      form.location_enforcement_enabled ? 'translate-x-6' : 'translate-x-1'
+                    }`}
+                  />
+                </button>
+              </div>
+            </>
           ) : (
             <>
               <Field label="City/State">

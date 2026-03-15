@@ -37,9 +37,13 @@ create table if not exists app_users (
   stn_rental text,
   stn_gas text,
   work_location_tag varchar(8) references location_tags(tag),
+  location_enforcement_enabled boolean not null default false,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+-- Idempotent migration: add column to existing deployments
+alter table if exists app_users add column if not exists location_enforcement_enabled boolean not null default false;
 
 create index if not exists idx_app_users_manager_id on app_users(manager_id);
 create index if not exists idx_app_users_role on app_users(user_role);

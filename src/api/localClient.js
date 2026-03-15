@@ -98,6 +98,7 @@ function normalizeUser(raw) {
     company_name: String(user.company_name || '').trim(),
     work_location_tag: String(user.work_location_tag || '').trim().toUpperCase(),
     data_center_location: String(user.data_center_location || '').trim(),
+    location_enforcement_enabled: Boolean(user.location_enforcement_enabled ?? false),
   };
 }
 
@@ -335,6 +336,7 @@ export const localClient = {
             stn_accommodation: next.stn_accommodation || null,
             stn_rental: next.stn_rental || null,
             stn_gas: next.stn_gas || null,
+            location_enforcement_enabled: next.location_enforcement_enabled ?? false,
           }),
         });
       } catch {
