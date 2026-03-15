@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Navigate } from 'react-router-dom';
+import { Navigate, useNavigate } from 'react-router-dom';
 import { useAuth } from '@/lib/AuthContext';
 import { localClient } from '@/api/localClient';
 import { Button } from '@/components/ui/button';
@@ -23,6 +23,7 @@ function Field({ label, required, children }) {
 
 export default function Setup() {
   const { user } = useAuth();
+  const navigate = useNavigate();
   const [step, setStep] = useState(1);
   const [selectedRole, setSelectedRole] = useState('employee');
   const [saving, setSaving] = useState(false);
@@ -81,7 +82,7 @@ export default function Setup() {
 
     try {
       await localClient.auth.updateMe(data);
-      window.location.href = '/Dashboard';
+      navigate('/Dashboard', { replace: true });
     } catch (e) {
       console.error('Setup error:', e);
       setError(e?.message || 'Something went wrong. Please try again.');
