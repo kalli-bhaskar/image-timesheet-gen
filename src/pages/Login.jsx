@@ -24,7 +24,7 @@ function decodeJwtPayload(credential) {
 }
 
 export default function Login() {
-  const { isAuthenticated, user, checkAppState } = useAuth();
+  const { isAuthenticated, user, checkAppState, applyAuthUser } = useAuth();
   const googleButtonRef = useRef(null);
   const [email, setEmail] = useState('');
   const [fullName, setFullName] = useState('');
@@ -49,8 +49,9 @@ export default function Login() {
             if (!googleEmail) {
               throw new Error('Google sign-in did not return an email.');
             }
-            await localClient.auth.loginWithGoogle({ email: googleEmail, name: googleName });
-            await checkAppState();
+            const loggedInUser = await localClient.auth.loginWithGoogle({ email: googleEmail, name: googleName });
+            applyAuthUser(loggedInUser);
+            checkAppState();
           } catch (err) {
             setError(err?.message || 'Google sign-in failed. Please try again.');
             setLoading(false);
@@ -92,8 +93,9 @@ export default function Login() {
     setLoading(true);
 
     try {
-      await localClient.auth.login({ email, fullName });
-      await checkAppState();
+      const loggedInUser = await localClient.auth.login({ email, fullName });
+      applyAuthUser(loggedInUser);
+      checkAppState();
     } catch (err) {
       setError(err?.message || 'Unable to login. Please try again.');
       setLoading(false);

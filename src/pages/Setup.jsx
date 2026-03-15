@@ -22,7 +22,7 @@ function Field({ label, required, children }) {
 }
 
 export default function Setup() {
-  const { user } = useAuth();
+  const { user, checkAppState, applyAuthUser } = useAuth();
   const navigate = useNavigate();
   const [step, setStep] = useState(1);
   const [selectedRole, setSelectedRole] = useState('employee');
@@ -81,7 +81,9 @@ export default function Setup() {
     }
 
     try {
-      await localClient.auth.updateMe(data);
+      const updatedUser = await localClient.auth.updateMe(data);
+      applyAuthUser(updatedUser);
+      checkAppState();
       navigate('/Dashboard', { replace: true });
     } catch (e) {
       console.error('Setup error:', e);

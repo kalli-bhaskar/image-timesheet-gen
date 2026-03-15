@@ -15,6 +15,13 @@ export const AuthProvider = ({ children }) => {
     checkUserAuth();
   }, []);
 
+  const applyAuthUser = (nextUser) => {
+    setUser(nextUser);
+    setIsAuthenticated(true);
+    setAuthError(null);
+    setIsLoadingAuth(false);
+  };
+
   const checkAppState = async () => {
     await checkUserAuth();
   };
@@ -23,10 +30,7 @@ export const AuthProvider = ({ children }) => {
     try {
       setIsLoadingAuth(true);
       const currentUser = await localClient.auth.me();
-      setUser(currentUser);
-      setIsAuthenticated(true);
-      setAuthError(null);
-      setIsLoadingAuth(false);
+      applyAuthUser(currentUser);
     } catch (error) {
       const errorType = error?.type || 'auth_required';
       setIsLoadingAuth(false);
@@ -59,7 +63,8 @@ export const AuthProvider = ({ children }) => {
       appPublicSettings,
       logout,
       navigateToLogin,
-      checkAppState
+      checkAppState,
+      applyAuthUser
     }}>
       {children}
     </AuthContext.Provider>
