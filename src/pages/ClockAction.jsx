@@ -20,6 +20,16 @@ import {
 } from '@/components/ui/alert-dialog';
 
 const BACKEND_BASE_URL = (import.meta.env.VITE_BACKEND_URL || 'http://localhost:8765').replace(/\/$/, '');
+const FALLBACK_CITY_TO_TAG = new Map([
+  ['columbus', 'CLB'],
+  ['lancaster', 'LCT'],
+  ['newark', 'NBY'],
+]);
+const FALLBACK_COUNTY_TO_TAG = new Map([
+  ['franklin', 'CLB'],
+  ['fairfield', 'LCT'],
+  ['licking', 'NBY'],
+]);
 
 function normalizeLocationTag(value) {
   return String(value || '').trim().toUpperCase();
@@ -32,6 +42,16 @@ function normalizeLocationText(value) {
     .replace(/[^a-z\s]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+function pickUserField(user, ...keys) {
+  for (const key of keys) {
+    const value = user?.[key];
+    if (value !== undefined && value !== null && String(value).trim() !== '') {
+      return String(value).trim();
+    }
+  }
+  return '';
 }
 
 async function analyzeImageWithBackend(file) {
@@ -114,6 +134,14 @@ export default function ClockAction() {
       const code = normalizeLocationTag(tag.code);
       if (county && code) countyToTag.set(county, code);
       if (city && code) cityToTag.set(city, code);
+    }
+    for (const [county, code] of FALLBACK_COUNTY_TO_TAG.entries()) {
+      if (!countyToTag.has(county)) countyToTag.set(county, code);
+      activeCodes.add(code);
+    }
+    for (const [city, code] of FALLBACK_CITY_TO_TAG.entries()) {
+      if (!cityToTag.has(city)) cityToTag.set(city, code);
+      activeCodes.add(code);
     }
     return { activeCodes, countyToTag, cityToTag };
   }, [locationTags]);
@@ -239,13 +267,23 @@ export default function ClockAction() {
     }
 
     if (captureFlow?.action === 'in') {
-      const directExpectedTag = normalizeLocationTag(user.work_location_tag);
-      const expectedByDataCenter = tagContext.cityToTag.get(normalizeLocationText(user.data_center_location));
-      const expectedByCityState = tagContext.cityToTag.get(normalizeLocationText(String(user.city_state || '').split(',')[0]));
-      const expectedTag = normalizeLocationTag(directExpectedTag || expectedByDataCenter || expectedByCityState || user.data_center_location);
+      const directExpectedTag = normalizeLocationTag(
+        pickUserField(user, 'work_location_tag', 'workLocationTag', 'location_tag', 'locationTag')
+      );
+      const expectedDataCenter = pickUserField(user, 'data_center_location', 'dataCenterLocation', 'work_location_name');
+      const expectedCityState = pickUserField(user, 'city_state', 'cityState').split(',')[0] || '';
+      const expectedByDataCenter = tagContext.cityToTag.get(normalizeLocationText(expectedDataCenter));
+      const expectedByCityState = tagContext.cityToTag.get(normalizeLocationText(expectedCityState));
+      const expectedByCounty = tagContext.countyToTag.get(normalizeLocationText(expectedDataCenter));
+      const expectedTag = normalizeLocationTag(
+        directExpectedTag || expectedByDataCenter || expectedByCityState || expectedByCounty
+      );
       const isExpectedValid = tagContext.activeCodes.has(expectedTag);
 
-      if (!isExpectedValid || !detectedTag || detectedTag !== expectedTag) {
+      if (!expectedTag) {
+        // Do not block if the user's expected location tag was never configured.
+        toast.warning('Your expected work location tag is not configured yet. Clock-in allowed for now.');
+      } else if (!isExpectedValid || !detectedTag || detectedTag !== expectedTag) {
         setCaptureFlow(null);
         setLocationMismatch({
           expectedTag: expectedTag || 'NOT SET',
