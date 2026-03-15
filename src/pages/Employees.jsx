@@ -18,6 +18,24 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
 
+function normalizeSearchValue(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function matchesEmployeeSearch(employee, query) {
+  const normalizedQuery = normalizeSearchValue(query);
+  if (!normalizedQuery) return true;
+
+  const fields = [
+    employee?.full_name,
+    employee?.display_name,
+    employee?.email,
+    employee?.company_name,
+  ];
+
+  return fields.some((field) => normalizeSearchValue(field).includes(normalizedQuery));
+}
+
 export default function Employees() {
   const { user } = useAuth();
   const queryClient = useQueryClient();
@@ -39,11 +57,10 @@ export default function Employees() {
     queryFn: () => localClient.entities.User.filter({ manager_email: user.email }),
   });
 
-  const { data: companyEmployees = [] } = useQuery({
-    queryKey: ['company-employees', user.company_name],
+  const { data: allEmployees = [] } = useQuery({
+    queryKey: ['all-employees'],
     queryFn: async () => {
-      if (!user.company_name) return [];
-      return localClient.entities.User.filter({ company_name: user.company_name, user_role: 'employee' });
+      return localClient.entities.User.filter({ user_role: 'employee' });
     },
   });
 
@@ -58,11 +75,11 @@ export default function Employees() {
     if (!email.trim()) return;
     setAdding(true);
     try {
-      await localClient.users.inviteUser(email.trim(), 'user');
+      await localClient.users.inviteUser(email.trim(), 'employee');
       toast.success(`Invitation sent to ${email}`);
       setEmail('');
       queryClient.invalidateQueries({ queryKey: ['managed-users'] });
-      queryClient.invalidateQueries({ queryKey: ['company-employees'] });
+      queryClient.invalidateQueries({ queryKey: ['all-employees'] });
     } finally {
       setAdding(false);
     }
@@ -84,7 +101,7 @@ export default function Employees() {
     });
     toast.success(`${employee.full_name} added to your team`);
     queryClient.invalidateQueries({ queryKey: ['managed-users'] });
-    queryClient.invalidateQueries({ queryKey: ['company-employees'] });
+    queryClient.invalidateQueries({ queryKey: ['all-employees'] });
   };
 
   const handleTagSave = async (employee, nextTag) => {
@@ -94,7 +111,7 @@ export default function Employees() {
       await localClient.entities.User.update(employee.id, { work_location_tag: nextTag });
       toast.success(`Location tag for ${employee.full_name} set to ${nextTag}`);
       queryClient.invalidateQueries({ queryKey: ['managed-users'] });
-      queryClient.invalidateQueries({ queryKey: ['company-employees'] });
+      queryClient.invalidateQueries({ queryKey: ['all-employees'] });
     } finally {
       setSavingTagId('');
     }
@@ -125,14 +142,16 @@ export default function Employees() {
     queryClient.invalidateQueries({ queryKey: ['location-tags'] });
   };
 
-  const filtered = employees.filter((e) =>
-    (e.full_name || '').toLowerCase().includes(search.toLowerCase())
-  );
+  const filtered = employees.filter((employee) => matchesEmployeeSearch(employee, search));
 
-  const companyCandidates = companyEmployees
+  const normalizedManagerCompany = normalizeSearchValue(user.company_name);
+
+  const companyCandidates = allEmployees
+    .filter((employee) => employee.user_role === 'employee')
+    .filter((employee) => !normalizedManagerCompany || normalizeSearchValue(employee.company_name) === normalizedManagerCompany)
     .filter((e) => e.id !== user.id)
     .filter((e) => (e.manager_email || '') !== user.email)
-    .filter((e) => (e.full_name || '').toLowerCase().includes(companySearch.toLowerCase()));
+    .filter((employee) => matchesEmployeeSearch(employee, companySearch));
 
   return (
     <div className="p-4 max-w-lg mx-auto space-y-6">

@@ -38,6 +38,18 @@ COUNTY_TAGS = {
     'licking': 'NBY',
 }
 
+CITY_TO_COUNTY = {
+    'columbus': 'franklin',
+    'lancaster': 'fairfield',
+    'newark': 'licking',
+}
+
+TAG_TO_DATA_CENTER = {
+    'CLB': 'Columbus',
+    'LCT': 'Lancaster',
+    'NBY': 'Newark',
+}
+
 PROFILE_DEFAULTS = {
     'city_state': 'Columbus, OH',
     'customer': 'N/A',
@@ -169,14 +181,43 @@ def parse_timestamp(ocr_text: str) -> datetime | None:
 def parse_county(ocr_text: str) -> str | None:
     match = COUNTY_RE.search(ocr_text)
     if not match:
+        normalized_text = normalize_location_text(ocr_text)
+        for county_key in COUNTY_TAGS:
+            if county_key in normalized_text:
+                return county_key.title()
+        for city_name, county_key in CITY_TO_COUNTY.items():
+            if city_name in normalized_text:
+                return county_key.title()
         return None
-    return match.group(1).title()
+    return canonicalize_county(match.group(1)).title()
+
+
+def normalize_location_text(value: str | None) -> str:
+    text = re.sub(r'[^a-z\s]', ' ', str(value or '').lower())
+    text = re.sub(r'\s+', ' ', text)
+    return text.strip()
+
+
+def canonicalize_county(value: str | None) -> str:
+    normalized = normalize_location_text(value)
+    if normalized.endswith(' county'):
+        normalized = normalized[: -len(' county')].strip()
+    if normalized in COUNTY_TAGS:
+        return normalized
+    for county_key in COUNTY_TAGS:
+        if county_key in normalized:
+            return county_key
+    for city_name, county_key in CITY_TO_COUNTY.items():
+        if city_name in normalized:
+            return county_key
+    return normalized
 
 
 def determine_location_tag(county: str | None) -> str:
-    if not county:
+    canonical_county = canonicalize_county(county)
+    if not canonical_county:
         return ''
-    return COUNTY_TAGS.get(county.lower(), '')
+    return COUNTY_TAGS.get(canonical_county, '')
 
 
 def analyze_image_bytes(image_bytes: bytes, filename: str) -> dict[str, Any]:
@@ -189,6 +230,7 @@ def analyze_image_bytes(image_bytes: bytes, filename: str) -> dict[str, Any]:
     timestamp = parse_timestamp(ocr_text)
     county = parse_county(ocr_text)
     location_tag = determine_location_tag(county)
+    data_center_location = TAG_TO_DATA_CENTER.get(location_tag, '')
     return {
         'filename': filename,
         'ocr_text': ocr_text,
@@ -197,6 +239,7 @@ def analyze_image_bytes(image_bytes: bytes, filename: str) -> dict[str, Any]:
         'time': timestamp.strftime('%I:%M:%S %p') if timestamp else None,
         'county': county,
         'location_tag': location_tag,
+        'data_center_location': data_center_location,
         'crop': {
             'source_size': list(source_size),
             'strategy': 'bottom-right-half',
@@ -280,8 +323,15 @@ def write_shift_to_workbook(
     hours_text, hours_decimal = calculate_hours(time_in_dt, time_out_dt)
     location_tag = ''
     for result in (clock_in_result, clock_out_result):
-        if result and result['location_tag']:
+        if not result:
+            continue
+        if result.get('location_tag'):
             location_tag = result['location_tag']
+            break
+        if result.get('county'):
+            mapped = determine_location_tag(str(result['county']))
+            if mapped:
+                location_tag = mapped
             break
 
     values = {
@@ -323,10 +373,15 @@ def normalize_meta_result(meta: Any, label: str) -> dict[str, Any] | None:
         except ValueError as exc:
             raise ValueError(f'{label}.timestamp must be ISO format, e.g. 2026-03-05T09:32:59.') from exc
 
-    county = meta.get('county')
-    location_tag = meta.get('location_tag')
+    county_value = meta.get('county')
+    canonical_county = canonicalize_county(str(county_value)) if county_value else ''
+    county = canonical_county.title() if canonical_county else county_value
+    location_tag = str(meta.get('location_tag') or '').strip().upper()
     if not location_tag and county:
         location_tag = determine_location_tag(str(county))
+    data_center_location = str(meta.get('data_center_location') or '').strip()
+    if not data_center_location and location_tag:
+        data_center_location = TAG_TO_DATA_CENTER.get(location_tag, '')
 
     return {
         'filename': meta.get('filename') or label,
@@ -336,6 +391,7 @@ def normalize_meta_result(meta: Any, label: str) -> dict[str, Any] | None:
         'time': meta.get('time'),
         'county': county,
         'location_tag': location_tag or '',
+        'data_center_location': data_center_location,
         'crop': meta.get('crop') or {'strategy': 'metadata-only'},
     }
 

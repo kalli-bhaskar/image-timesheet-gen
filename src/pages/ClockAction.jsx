@@ -25,6 +25,15 @@ function normalizeLocationTag(value) {
   return String(value || '').trim().toUpperCase();
 }
 
+function normalizeLocationText(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/county/g, ' ')
+    .replace(/[^a-z\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 async function analyzeImageWithBackend(file) {
   if (!file) return null;
   const formData = new FormData();
@@ -98,12 +107,15 @@ export default function ClockAction() {
   const tagContext = useMemo(() => {
     const activeCodes = new Set(locationTags.map((tag) => normalizeLocationTag(tag.code)).filter(Boolean));
     const countyToTag = new Map();
+    const cityToTag = new Map();
     for (const tag of locationTags) {
-      const county = String(tag.county_name || '').trim().toLowerCase();
+      const county = normalizeLocationText(tag.county_name);
+      const city = normalizeLocationText(tag.data_center_location);
       const code = normalizeLocationTag(tag.code);
       if (county && code) countyToTag.set(county, code);
+      if (city && code) cityToTag.set(city, code);
     }
-    return { activeCodes, countyToTag };
+    return { activeCodes, countyToTag, cityToTag };
   }, [locationTags]);
 
   const activeEntry = entries.find((e) => e.status === 'clocked_in');
@@ -217,15 +229,20 @@ export default function ClockAction() {
       toast.warning('OCR analyze failed, using local timestamp fallback.');
     }
 
-    const county = String(imageMeta?.county || '').trim().toLowerCase();
+    const county = normalizeLocationText(imageMeta?.county);
+    const imageDataCenterLocation = normalizeLocationText(imageMeta?.data_center_location || imageMeta?.location_name);
     const mappedByCounty = county ? tagContext.countyToTag.get(county) : '';
-    const detectedTag = normalizeLocationTag(mappedByCounty || imageMeta?.location_tag);
+    const mappedByCity = imageDataCenterLocation ? tagContext.cityToTag.get(imageDataCenterLocation) : '';
+    const detectedTag = normalizeLocationTag(mappedByCounty || mappedByCity || imageMeta?.location_tag);
     if (imageMeta) {
       imageMeta = { ...imageMeta, location_tag: detectedTag || imageMeta.location_tag };
     }
 
     if (captureFlow?.action === 'in') {
-      const expectedTag = normalizeLocationTag(user.work_location_tag || user.data_center_location);
+      const directExpectedTag = normalizeLocationTag(user.work_location_tag);
+      const expectedByDataCenter = tagContext.cityToTag.get(normalizeLocationText(user.data_center_location));
+      const expectedByCityState = tagContext.cityToTag.get(normalizeLocationText(String(user.city_state || '').split(',')[0]));
+      const expectedTag = normalizeLocationTag(directExpectedTag || expectedByDataCenter || expectedByCityState || user.data_center_location);
       const isExpectedValid = tagContext.activeCodes.has(expectedTag);
 
       if (!isExpectedValid || !detectedTag || detectedTag !== expectedTag) {
