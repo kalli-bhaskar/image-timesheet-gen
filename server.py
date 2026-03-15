@@ -79,7 +79,7 @@ TIMESTAMP_RE = re.compile(
     r'(?P<time>\d{1,2}:\d{2}:\d{2}\s+[AP]M)',
     re.IGNORECASE,
 )
-COUNTY_RE = re.compile(r'(Fairfield|Franklin|Licking)\s+County', re.IGNORECASE)
+COUNTY_RE = re.compile(r'([A-Za-z]+(?:\s+[A-Za-z]+)?)\s+County', re.IGNORECASE)
 
 app = Flask(__name__)
 

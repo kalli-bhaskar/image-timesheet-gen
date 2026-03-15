@@ -2,6 +2,13 @@ const USER_KEY = 'timetrack_user';
 const USERS_KEY = 'timetrack_users';
 const ENTRIES_KEY = 'timetrack_entries';
 const SESSION_KEY = 'timetrack_session';
+const LOCATION_TAGS_KEY = 'timetrack_location_tags';
+
+const DEFAULT_LOCATION_TAGS = [
+  { code: 'CLB', county_name: 'Franklin', data_center_location: 'Columbus', is_active: true },
+  { code: 'LCT', county_name: 'Fairfield', data_center_location: 'Lancaster', is_active: true },
+  { code: 'NBY', county_name: 'Licking', data_center_location: 'Newark', is_active: true },
+];
 
 function uid(prefix = 'id') {
   return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -18,6 +25,27 @@ function readJson(key, fallback) {
 
 function writeJson(key, value) {
   localStorage.setItem(key, JSON.stringify(value));
+}
+
+function normalizeLocationTagRecord(raw = {}) {
+  return {
+    code: String(raw.code || '').trim().toUpperCase(),
+    county_name: String(raw.county_name || '').trim(),
+    data_center_location: String(raw.data_center_location || '').trim(),
+    is_active: raw.is_active !== false,
+    created_date: raw.created_date || new Date().toISOString(),
+    updated_date: raw.updated_date || new Date().toISOString(),
+  };
+}
+
+function ensureLocationTags() {
+  const existing = readJson(LOCATION_TAGS_KEY, null);
+  if (Array.isArray(existing) && existing.length > 0) {
+    return existing.map(normalizeLocationTagRecord);
+  }
+  const seeded = DEFAULT_LOCATION_TAGS.map(normalizeLocationTagRecord);
+  writeJson(LOCATION_TAGS_KEY, seeded);
+  return seeded;
 }
 
 function authRequiredError() {
@@ -311,6 +339,42 @@ export const localClient = {
       users.push(newUser);
       writeJson(USERS_KEY, users);
       return { success: true, user: newUser };
+    },
+  },
+  locationTags: {
+    async list({ includeInactive = false } = {}) {
+      const tags = ensureLocationTags();
+      if (includeInactive) return tags;
+      return tags.filter((t) => t.is_active);
+    },
+    async create(payload = {}) {
+      const tags = ensureLocationTags();
+      const next = normalizeLocationTagRecord(payload);
+      if (!next.code) throw new Error('Tag code is required');
+      if (!next.county_name) throw new Error('County name is required');
+      if (tags.some((t) => t.code === next.code)) {
+        throw new Error(`Location tag ${next.code} already exists`);
+      }
+      const updated = [...tags, next];
+      writeJson(LOCATION_TAGS_KEY, updated);
+      return next;
+    },
+    async update(code, patch = {}) {
+      const normalizedCode = String(code || '').trim().toUpperCase();
+      if (!normalizedCode) throw new Error('Tag code is required');
+      const tags = ensureLocationTags();
+      const idx = tags.findIndex((t) => t.code === normalizedCode);
+      if (idx < 0) throw new Error('Location tag not found');
+
+      const next = normalizeLocationTagRecord({
+        ...tags[idx],
+        ...patch,
+        code: normalizedCode,
+        updated_date: new Date().toISOString(),
+      });
+      tags[idx] = next;
+      writeJson(LOCATION_TAGS_KEY, tags);
+      return next;
     },
   },
   integrations: {

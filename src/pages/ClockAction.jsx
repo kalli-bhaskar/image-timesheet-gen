@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { useAuth } from '@/lib/AuthContext';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { localClient } from '@/api/localClient';
@@ -20,7 +20,6 @@ import {
 } from '@/components/ui/alert-dialog';
 
 const BACKEND_BASE_URL = (import.meta.env.VITE_BACKEND_URL || 'http://localhost:8765').replace(/\/$/, '');
-const VALID_LOCATION_TAGS = ['CLB', 'LCT', 'NBY'];
 
 function normalizeLocationTag(value) {
   return String(value || '').trim().toUpperCase();
@@ -90,6 +89,22 @@ export default function ClockAction() {
     queryKey: ['my-entries', user.email],
     queryFn: () => localClient.entities.TimesheetEntry.filter({ employee_email: user.email }, '-created_date', 10),
   });
+
+  const { data: locationTags = [] } = useQuery({
+    queryKey: ['location-tags'],
+    queryFn: () => localClient.locationTags.list({ includeInactive: false }),
+  });
+
+  const tagContext = useMemo(() => {
+    const activeCodes = new Set(locationTags.map((tag) => normalizeLocationTag(tag.code)).filter(Boolean));
+    const countyToTag = new Map();
+    for (const tag of locationTags) {
+      const county = String(tag.county_name || '').trim().toLowerCase();
+      const code = normalizeLocationTag(tag.code);
+      if (county && code) countyToTag.set(county, code);
+    }
+    return { activeCodes, countyToTag };
+  }, [locationTags]);
 
   const activeEntry = entries.find((e) => e.status === 'clocked_in');
 
@@ -202,10 +217,16 @@ export default function ClockAction() {
       toast.warning('OCR analyze failed, using local timestamp fallback.');
     }
 
+    const county = String(imageMeta?.county || '').trim().toLowerCase();
+    const mappedByCounty = county ? tagContext.countyToTag.get(county) : '';
+    const detectedTag = normalizeLocationTag(mappedByCounty || imageMeta?.location_tag);
+    if (imageMeta) {
+      imageMeta = { ...imageMeta, location_tag: detectedTag || imageMeta.location_tag };
+    }
+
     if (captureFlow?.action === 'in') {
       const expectedTag = normalizeLocationTag(user.work_location_tag || user.data_center_location);
-      const detectedTag = normalizeLocationTag(imageMeta?.location_tag);
-      const isExpectedValid = VALID_LOCATION_TAGS.includes(expectedTag);
+      const isExpectedValid = tagContext.activeCodes.has(expectedTag);
 
       if (!isExpectedValid || !detectedTag || detectedTag !== expectedTag) {
         setCaptureFlow(null);

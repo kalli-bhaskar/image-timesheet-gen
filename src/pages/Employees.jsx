@@ -27,8 +27,9 @@ export default function Employees() {
   const [adding, setAdding] = useState(false);
   const [removeTarget, setRemoveTarget] = useState(null);
   const [savingTagId, setSavingTagId] = useState('');
-
-  const allowedTags = ['CLB', 'LCT', 'NBY'];
+  const [newTagCode, setNewTagCode] = useState('');
+  const [newTagCounty, setNewTagCounty] = useState('');
+  const [newTagLocation, setNewTagLocation] = useState('');
 
   if (!user?.setup_complete) return <Navigate to="/Setup" replace />;
   if (user.user_role !== 'manager') return <Navigate to="/Dashboard" replace />;
@@ -46,14 +47,25 @@ export default function Employees() {
     },
   });
 
+  const { data: locationTags = [] } = useQuery({
+    queryKey: ['location-tags'],
+    queryFn: () => localClient.locationTags.list({ includeInactive: true }),
+  });
+
+  const activeTags = locationTags.filter((tag) => tag.is_active);
+
   const handleAdd = async () => {
     if (!email.trim()) return;
     setAdding(true);
-    await localClient.users.inviteUser(email.trim(), 'user');
-    toast.success(`Invitation sent to ${email}`);
-    setEmail('');
-    setAdding(false);
-    queryClient.invalidateQueries({ queryKey: ['managed-users'] });
+    try {
+      await localClient.users.inviteUser(email.trim(), 'user');
+      toast.success(`Invitation sent to ${email}`);
+      setEmail('');
+      queryClient.invalidateQueries({ queryKey: ['managed-users'] });
+      queryClient.invalidateQueries({ queryKey: ['company-employees'] });
+    } finally {
+      setAdding(false);
+    }
   };
 
   const handleRemove = async () => {
@@ -76,7 +88,7 @@ export default function Employees() {
   };
 
   const handleTagSave = async (employee, nextTag) => {
-    if (!employee?.id || !allowedTags.includes(nextTag)) return;
+    if (!employee?.id || !nextTag) return;
     setSavingTagId(employee.id);
     try {
       await localClient.entities.User.update(employee.id, { work_location_tag: nextTag });
@@ -86,6 +98,31 @@ export default function Employees() {
     } finally {
       setSavingTagId('');
     }
+  };
+
+  const handleCreateTag = async () => {
+    const code = String(newTagCode || '').trim().toUpperCase();
+    const county = String(newTagCounty || '').trim();
+    const location = String(newTagLocation || '').trim();
+    if (!code || !county) return;
+
+    await localClient.locationTags.create({
+      code,
+      county_name: county,
+      data_center_location: location,
+      is_active: true,
+    });
+
+    setNewTagCode('');
+    setNewTagCounty('');
+    setNewTagLocation('');
+    toast.success(`Location tag ${code} created`);
+    queryClient.invalidateQueries({ queryKey: ['location-tags'] });
+  };
+
+  const handleTagMetaUpdate = async (code, patch) => {
+    await localClient.locationTags.update(code, patch);
+    queryClient.invalidateQueries({ queryKey: ['location-tags'] });
   };
 
   const filtered = employees.filter((e) =>
@@ -125,6 +162,59 @@ export default function Employees() {
               <UserPlus className="w-4 h-4" />
             )}
           </Button>
+        </div>
+      </div>
+
+      <div className="bg-white rounded-2xl p-4 border border-slate-100 space-y-3">
+        <p className="text-sm font-medium text-slate-700">Location Tags</p>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+          <Input
+            value={newTagCode}
+            onChange={(e) => setNewTagCode(e.target.value.toUpperCase())}
+            placeholder="Tag (e.g. ABC)"
+          />
+          <Input
+            value={newTagCounty}
+            onChange={(e) => setNewTagCounty(e.target.value)}
+            placeholder="County"
+          />
+          <Input
+            value={newTagLocation}
+            onChange={(e) => setNewTagLocation(e.target.value)}
+            placeholder="Location Name"
+          />
+        </div>
+        <Button onClick={handleCreateTag} disabled={!newTagCode.trim() || !newTagCounty.trim()}>
+          Add Tag
+        </Button>
+        <div className="space-y-2">
+          {locationTags.map((tag) => (
+            <div key={tag.code} className="border border-slate-200 rounded-xl p-3 space-y-2">
+              <div className="flex items-center justify-between">
+                <p className="text-sm font-semibold text-slate-900">{tag.code}</p>
+                <label className="text-xs text-slate-500 flex items-center gap-2">
+                  Active
+                  <input
+                    type="checkbox"
+                    checked={!!tag.is_active}
+                    onChange={(e) => handleTagMetaUpdate(tag.code, { is_active: e.target.checked })}
+                  />
+                </label>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <Input
+                  value={tag.county_name || ''}
+                  onChange={(e) => handleTagMetaUpdate(tag.code, { county_name: e.target.value })}
+                  placeholder="County"
+                />
+                <Input
+                  value={tag.data_center_location || ''}
+                  onChange={(e) => handleTagMetaUpdate(tag.code, { data_center_location: e.target.value })}
+                  placeholder="Location Name"
+                />
+              </div>
+            </div>
+          ))}
         </div>
       </div>
 
@@ -202,8 +292,8 @@ export default function Employees() {
                       className="text-xs border border-slate-300 rounded-md px-2 py-1 bg-white"
                     >
                       <option value="">Set tag</option>
-                      {allowedTags.map((tag) => (
-                        <option key={tag} value={tag}>{tag}</option>
+                      {activeTags.map((tag) => (
+                        <option key={tag.code} value={tag.code}>{tag.code}</option>
                       ))}
                     </select>
                   </div>
