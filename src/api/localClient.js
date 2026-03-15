@@ -377,20 +377,85 @@ export const localClient = {
     },
     User: {
       async filter(filterObj = {}, sortExpr, limit) {
+        // Prefer DB-backed users when backend is available.
+        try {
+          const params = new URLSearchParams();
+          for (const [k, v] of Object.entries(filterObj || {})) {
+            if (v !== undefined && v !== null && String(v).trim() !== '') {
+              params.set(k, String(v).trim());
+            }
+          }
+          const query = params.toString();
+          const res = await fetch(`${BACKEND_BASE_URL}/users${query ? `?${query}` : ''}`);
+          if (res.ok) {
+            const data = await res.json();
+            if (Array.isArray(data?.users)) {
+              const normalizedRemote = data.users.map(normalizeUser);
+              const local = readUsers();
+              const byEmail = new Map(local.map((u) => [u.email, u]));
+              for (const user of normalizedRemote) byEmail.set(user.email, normalizeUser({ ...byEmail.get(user.email), ...user }));
+              writeJson(USERS_KEY, Array.from(byEmail.values()));
+
+              const sortedRemote = applySort(normalizedRemote, sortExpr);
+              return typeof limit === 'number' ? sortedRemote.slice(0, limit) : sortedRemote;
+            }
+          }
+        } catch {
+          // Fall back to local cache.
+        }
+
         const rows = readUsers();
         const filtered = applyFilter(rows, filterObj);
         const sorted = applySort(filtered, sortExpr);
         return typeof limit === 'number' ? sorted.slice(0, limit) : sorted;
       },
       async update(id, patch) {
-        const updated = normalizeUser(updateRecord(USERS_KEY, id, patch));
         const users = readUsers();
+        const existing = users.find((u) => u.id === id) || null;
+        const updated = existing
+          ? normalizeUser(updateRecord(USERS_KEY, id, patch))
+          : normalizeUser({ ...patch, id });
         const idx = users.findIndex((u) => u.id === updated.id);
         if (idx >= 0) {
           users[idx] = updated;
           writeJson(USERS_KEY, users);
+        } else if (updated.email) {
+          users.push(updated);
+          writeJson(USERS_KEY, users);
         }
         if (updated.id === currentUser().id) setCurrentUser(updated);
+
+        // Persist updates to DB when possible.
+        try {
+          if (updated.email) {
+            await fetch(`${BACKEND_BASE_URL}/user`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                email: updated.email,
+                full_name: updated.full_name,
+                display_name: updated.display_name,
+                user_role: updated.user_role,
+                setup_complete: updated.setup_complete,
+                company_name: updated.company_name || null,
+                customer: updated.customer || updated.company_name || null,
+                city_state: updated.city_state || null,
+                manager_email: updated.manager_email || null,
+                work_location_tag: updated.work_location_tag || null,
+                classification: updated.classification || null,
+                hourly_rate: updated.hourly_rate || 0,
+                per_diem: updated.per_diem || null,
+                accommodation_allowance: updated.accommodation_allowance || null,
+                stn_accommodation: updated.stn_accommodation || null,
+                stn_rental: updated.stn_rental || null,
+                stn_gas: updated.stn_gas || null,
+              }),
+            });
+          }
+        } catch {
+          // Local update already succeeded.
+        }
+
         return updated;
       },
     },

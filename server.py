@@ -779,6 +779,100 @@ def get_user() -> Any:
         return jsonify({'found': False, 'error': str(exc)}), 200
 
 
+@app.route('/users', methods=['GET'])
+def list_users() -> Any:
+    """List users from DB with optional filters.
+    Supported query params: email, manager_email, user_role, customer
+    """
+    if not DB_ENABLED:
+        return jsonify({'users': [], 'reason': 'db_disabled'}), 200
+
+    email = request.args.get('email', '').strip().lower()
+    manager_email = request.args.get('manager_email', '').strip().lower()
+    user_role = request.args.get('user_role', '').strip().lower()
+    customer = request.args.get('customer', '').strip().lower()
+
+    where_parts: list[str] = []
+    params: list[Any] = []
+
+    if email:
+        where_parts.append('lower(u.email) = %s')
+        params.append(email)
+    if manager_email:
+        where_parts.append('lower(coalesce(m.email, \''\')) = %s')
+        params.append(manager_email)
+    if user_role:
+        where_parts.append('lower(u.user_role) = %s')
+        params.append(user_role)
+    if customer:
+        where_parts.append('lower(coalesce(nullif(u.customer, \''\'), u.company_name, \''\')) = %s')
+        params.append(customer)
+
+    where_sql = f" where {' and '.join(where_parts)}" if where_parts else ''
+
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT
+                      u.id,
+                      u.email,
+                      u.full_name,
+                      u.display_name,
+                      u.user_role,
+                      u.setup_complete,
+                      u.company_name,
+                      coalesce(nullif(u.customer, ''), u.company_name, '') as customer,
+                      u.city_state,
+                      u.work_location_tag,
+                      m.email as manager_email,
+                      u.classification,
+                      u.hourly_rate,
+                      u.per_diem,
+                      u.accommodation_allowance,
+                      u.stn_accommodation,
+                      u.stn_rental,
+                      u.stn_gas
+                    FROM app_users u
+                    LEFT JOIN app_users m ON m.id = u.manager_id
+                    {where_sql}
+                    ORDER BY u.full_name ASC, u.email ASC
+                    """,
+                    tuple(params),
+                )
+                rows = cur.fetchall()
+
+        users = []
+        for row in rows:
+            users.append(
+                {
+                    'id': str(row[0]) if row[0] else None,
+                    'email': row[1],
+                    'full_name': row[2],
+                    'display_name': row[3],
+                    'user_role': row[4],
+                    'setup_complete': bool(row[5]),
+                    'company_name': row[6] or '',
+                    'customer': row[7] or '',
+                    'city_state': row[8] or '',
+                    'work_location_tag': row[9] or '',
+                    'manager_email': row[10] or '',
+                    'classification': row[11] or '',
+                    'hourly_rate': float(row[12] or 0),
+                    'per_diem': row[13] or '',
+                    'accommodation_allowance': row[14] or '',
+                    'stn_accommodation': row[15] or '',
+                    'stn_rental': row[16] or '',
+                    'stn_gas': row[17] or '',
+                }
+            )
+
+        return jsonify({'users': users}), 200
+    except Exception as exc:
+        return jsonify({'users': [], 'error': str(exc)}), 200
+
+
 @app.route('/analyze', methods=['POST'])
 def analyze() -> Any:
     files = request.files.getlist('files')
