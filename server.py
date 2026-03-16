@@ -140,8 +140,8 @@ DATABASE_URL = os.getenv('DATABASE_URL') or os.getenv('POSTGRES_URL') or os.gete
 DB_ENABLED = bool(DATABASE_URL and psycopg)
 DB_BOOTSTRAPPED = False
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', '').strip()
-GEMINI_MODEL = os.getenv('GEMINI_MODEL', 'gemini-3.1-flash-lite').strip()
-GEMINI_FALLBACK_MODELS = ['gemini-3.1-flash-lite', 'gemini-2.5-flash', 'gemini-flash-latest']
+GEMINI_MODEL = os.getenv('GEMINI_MODEL', 'gemini-2.5-flash').strip()
+GEMINI_FALLBACK_MODELS = ['gemini-2.5-flash', 'gemini-flash-latest']
 
 
 def parse_csv_env(name: str) -> list[str]:
@@ -171,6 +171,7 @@ PADDLE_OCR_INSTANCE = None
 MAX_ANALYZE_FILE_BYTES = int(os.getenv('MAX_ANALYZE_FILE_BYTES', str(12 * 1024 * 1024)))
 MAX_OCR_INPUT_SIDE = int(os.getenv('MAX_OCR_INPUT_SIDE', '2200'))
 MAX_GEMINI_INPUT_SIDE = int(os.getenv('MAX_GEMINI_INPUT_SIDE', '1800'))
+MAX_TESSERACT_RETRY_SIDE = int(os.getenv('MAX_TESSERACT_RETRY_SIDE', '1200'))
 TESSERACT_TIMEOUT_SECONDS = float(os.getenv('TESSERACT_TIMEOUT_SECONDS', '6'))
 
 
@@ -183,6 +184,7 @@ def env_flag(name: str, default: bool) -> bool:
 
 ENABLE_PADDLE_FALLBACK = env_flag('ENABLE_PADDLE_FALLBACK', True)
 ENABLE_TESSERACT_FALLBACK = env_flag('ENABLE_TESSERACT_FALLBACK', True)
+ENABLE_TESSERACT_FULL_RETRY = env_flag('ENABLE_TESSERACT_FULL_RETRY', False)
 
 
 def get_db_connection() -> Any:
@@ -587,8 +589,9 @@ def analyze_image_bytes(image_bytes: bytes, filename: str) -> dict[str, Any]:
 
     # Last-resort retry: full image through Tesseract when crop-based OCR missed
     crop_strategy = 'bottom-right-half'
-    if timestamp is None and ocr_engine != 'gemini' and ENABLE_TESSERACT_FALLBACK:
-        full_prepared = preprocess_for_ocr(full_copy)
+    if timestamp is None and ocr_engine != 'gemini' and ENABLE_TESSERACT_FALLBACK and ENABLE_TESSERACT_FULL_RETRY:
+        full_reduced = scale_image_for_ocr(full_copy, max_side=MAX_TESSERACT_RETRY_SIDE)
+        full_prepared = preprocess_for_ocr(full_reduced)
         retry_text = run_fast_ocr(full_prepared)
         retry_ts, retry_source = parse_timestamp_with_source(retry_text)
         if retry_ts:
