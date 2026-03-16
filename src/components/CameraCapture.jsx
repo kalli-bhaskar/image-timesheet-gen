@@ -65,12 +65,15 @@ export default function CameraCapture({ onCapture, onCancel, label, captureMode 
       const normalizedFile = await normalizeImageFile(file);
       const { file_url } = await localClient.integrations.Core.UploadFile({ file: normalizedFile });
       const timestamp = new Date().toISOString();
-      await onCapture({
+      const captured = await onCapture({
         photoUrl: file_url,
         timestamp,
         file: normalizedFile,
         fileName: normalizedFile?.name || file.name,
       });
+      if (captured === true) {
+        onCancel();
+      }
     } finally {
       setUploading(false);
     }

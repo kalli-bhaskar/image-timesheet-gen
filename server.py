@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from calendar import monthrange
 import base64
 from io import BytesIO
 import json
@@ -173,6 +174,7 @@ MAX_OCR_INPUT_SIDE = int(os.getenv('MAX_OCR_INPUT_SIDE', '2200'))
 MAX_GEMINI_INPUT_SIDE = int(os.getenv('MAX_GEMINI_INPUT_SIDE', '1800'))
 MAX_TESSERACT_RETRY_SIDE = int(os.getenv('MAX_TESSERACT_RETRY_SIDE', '1200'))
 TESSERACT_TIMEOUT_SECONDS = float(os.getenv('TESSERACT_TIMEOUT_SECONDS', '6'))
+PAYROLL_SECOND_PERIOD_START_DAY = int(os.getenv('PAYROLL_SECOND_PERIOD_START_DAY', '16'))
 
 
 def env_flag(name: str, default: bool) -> bool:
@@ -185,6 +187,35 @@ def env_flag(name: str, default: bool) -> bool:
 ENABLE_PADDLE_FALLBACK = env_flag('ENABLE_PADDLE_FALLBACK', True)
 ENABLE_TESSERACT_FALLBACK = env_flag('ENABLE_TESSERACT_FALLBACK', True)
 ENABLE_TESSERACT_FULL_RETRY = env_flag('ENABLE_TESSERACT_FULL_RETRY', False)
+
+
+def get_payroll_second_period_start_day(raw_day: Any = None) -> int:
+    try:
+        candidate = raw_day if raw_day not in (None, '') else PAYROLL_SECOND_PERIOD_START_DAY
+        day = int(candidate or 16)
+    except (TypeError, ValueError):
+        day = 16
+    if day < 2 or day > 28:
+        return 16
+    return day
+
+
+def get_payroll_period(shift_dt: datetime, second_period_start_day: Any = None) -> str:
+    second_start = get_payroll_second_period_start_day(second_period_start_day)
+    first_end = second_start - 1
+    year = shift_dt.year
+    month = shift_dt.month
+    day = shift_dt.day
+
+    if day <= first_end:
+        start = datetime(year, month, 1).date().isoformat()
+        end = datetime(year, month, first_end).date().isoformat()
+        return f'{start} to {end}'
+
+    month_last_day = monthrange(year, month)[1]
+    start = datetime(year, month, second_start).date().isoformat()
+    end = datetime(year, month, month_last_day).date().isoformat()
+    return f'{start} to {end}'
 
 
 def get_db_connection() -> Any:
@@ -867,9 +898,9 @@ def persist_shift_to_database(
                       email, full_name, display_name, user_role, setup_complete,
                       manager_id, company_name, city_state, customer, classification,
                       hourly_rate, per_diem, accommodation_allowance,
-                      stn_accommodation, stn_rental, stn_gas, work_location_tag
+                                            stn_accommodation, stn_rental, stn_gas, work_location_tag, payroll_second_period_start_day
                     )
-                    values (%s, %s, %s, 'employee', true, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                        values (%s, %s, %s, 'employee', true, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     on conflict (email) do update
                     set
                       full_name = excluded.full_name,
@@ -885,9 +916,10 @@ def persist_shift_to_database(
                       stn_accommodation = excluded.stn_accommodation,
                       stn_rental = excluded.stn_rental,
                       stn_gas = excluded.stn_gas,
+                                            payroll_second_period_start_day = coalesce(excluded.payroll_second_period_start_day, app_users.payroll_second_period_start_day),
                       work_location_tag = coalesce(excluded.work_location_tag, app_users.work_location_tag),
                       updated_at = now()
-                    returning id, manager_id
+                                        returning id, manager_id, payroll_second_period_start_day
                     """,
                     (
                         employee_email,
@@ -905,11 +937,14 @@ def persist_shift_to_database(
                         profile.get('stn_rental'),
                         profile.get('stn_gas'),
                         work_location_tag,
+                        None,
                     ),
                 )
                 employee_row = cur.fetchone()
                 employee_id = employee_row[0]
                 resolved_manager_id = employee_row[1] or manager_id
+                user_period_start_day = get_payroll_second_period_start_day(employee_row[2] if len(employee_row) > 2 else None)
+                payroll_period = get_payroll_period(shift_dt, user_period_start_day)
 
                 entry_row = None
                 if time_out_dt:
@@ -943,7 +978,7 @@ def persist_shift_to_database(
                         (
                             resolved_manager_id,
                             shift_dt.date(),
-                            '',
+                            payroll_period,
                             'completed',
                             location_tag or None,
                             'backend_ocr',
@@ -975,7 +1010,7 @@ def persist_shift_to_database(
                             employee_id,
                             resolved_manager_id,
                             shift_dt.date(),
-                            '',
+                            payroll_period,
                             status,
                             location_tag or None,
                             'backend_ocr',
@@ -1094,6 +1129,7 @@ def upsert_user() -> Any:
         hourly_rate = 0.0
     raw_tag = str(payload.get('work_location_tag') or '').strip().upper() or None
     location_enforcement_enabled = bool(payload.get('location_enforcement_enabled') or False)
+    payroll_second_period_start_day = get_payroll_second_period_start_day(payload.get('payroll_second_period_start_day'))
 
     try:
         with get_db_connection() as conn:
@@ -1115,9 +1151,9 @@ def upsert_user() -> Any:
                       company_name, city_state, customer, classification,
                       hourly_rate, per_diem, accommodation_allowance,
                       stn_accommodation, stn_rental, stn_gas,
-                      work_location_tag, manager_id, location_enforcement_enabled
+                                            work_location_tag, manager_id, location_enforcement_enabled, payroll_second_period_start_day
                     )
-                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                     ON CONFLICT (email) DO UPDATE SET
                       full_name             = EXCLUDED.full_name,
                       display_name          = EXCLUDED.display_name,
@@ -1136,6 +1172,7 @@ def upsert_user() -> Any:
                       work_location_tag     = COALESCE(EXCLUDED.work_location_tag, app_users.work_location_tag),
                       manager_id            = COALESCE(EXCLUDED.manager_id, app_users.manager_id),
                       location_enforcement_enabled = EXCLUDED.location_enforcement_enabled,
+                                            payroll_second_period_start_day = EXCLUDED.payroll_second_period_start_day,
                       updated_at            = now()
                     RETURNING id
                     """,
@@ -1144,7 +1181,7 @@ def upsert_user() -> Any:
                         company_name, city_state, customer, classification,
                         hourly_rate, per_diem, accommodation_allowance,
                         stn_accommodation, stn_rental, stn_gas,
-                        work_location_tag, manager_id, location_enforcement_enabled,
+                        work_location_tag, manager_id, location_enforcement_enabled, payroll_second_period_start_day,
                     ),
                 )
                 urow = cur.fetchone()
@@ -1172,7 +1209,7 @@ def get_user() -> Any:
                            u.company_name, u.city_state, u.work_location_tag, u.manager_id,
                            u.customer, u.classification, u.hourly_rate, u.per_diem,
                            u.accommodation_allowance, u.stn_accommodation, u.stn_rental, u.stn_gas,
-                           m.email AS manager_email, u.location_enforcement_enabled
+                              m.email AS manager_email, u.location_enforcement_enabled, u.payroll_second_period_start_day
                     FROM app_users u
                     LEFT JOIN app_users m ON m.id = u.manager_id
                     WHERE u.email = %s
@@ -1189,7 +1226,7 @@ def get_user() -> Any:
             'company_name', 'city_state', 'work_location_tag', 'manager_id',
             'customer', 'classification', 'hourly_rate', 'per_diem',
             'accommodation_allowance', 'stn_accommodation', 'stn_rental', 'stn_gas',
-            'manager_email', 'location_enforcement_enabled',
+            'manager_email', 'location_enforcement_enabled', 'payroll_second_period_start_day',
         ]
         user = dict(zip(col_names, row))
         user['id'] = str(user['id']) if user['id'] else None
@@ -1255,7 +1292,8 @@ def list_users() -> Any:
                       u.stn_accommodation,
                       u.stn_rental,
                       u.stn_gas,
-                      u.location_enforcement_enabled
+                                            u.location_enforcement_enabled,
+                                            u.payroll_second_period_start_day
                     FROM app_users u
                     LEFT JOIN app_users m ON m.id = u.manager_id
                     {where_sql}
@@ -1288,6 +1326,7 @@ def list_users() -> Any:
                     'stn_rental': row[16] or '',
                     'stn_gas': row[17] or '',
                     'location_enforcement_enabled': bool(row[18]) if row[18] is not None else False,
+                    'payroll_second_period_start_day': int(row[19] or 16),
                 }
             )
 

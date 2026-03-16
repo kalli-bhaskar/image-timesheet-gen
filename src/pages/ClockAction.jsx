@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import { useAuth } from '@/lib/AuthContext';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { localClient } from '@/api/localClient';
@@ -199,31 +199,6 @@ function formatTimestampForPrompt(isoString) {
   return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
 }
 
-function reviewUploadTimestamp({
-  detectedIso,
-  action,
-  referenceStartIso = '',
-  allowBlank = false,
-}) {
-  const defaultValue = formatTimestampForPrompt(detectedIso);
-  const entered = window.prompt(
-    action === 'out'
-      ? 'Review clock-out timestamp. Edit if OCR picked the wrong date/time. You can also enter time only, for example 8:00 AM.'
-      : 'Review clock-in timestamp. Edit if OCR picked the wrong date/time.',
-    defaultValue
-  );
-
-  if (entered === null) return allowBlank ? detectedIso : null;
-
-  const trimmed = String(entered || '').trim();
-  if (!trimmed) return allowBlank ? detectedIso : null;
-
-  return parseManualTimestampInput(trimmed, {
-    referenceStartIso,
-    assumeClockOut: action === 'out',
-  });
-}
-
 function reconcileClockOutTimestamp(clockInIso, candidateIso) {
   const maxMinutes = 16 * 60;
   const start = new Date(clockInIso);
@@ -283,6 +258,21 @@ export default function ClockAction() {
   const [captureFlow, setCaptureFlow] = useState(null); // { action: 'in'|'out', mode: 'camera'|'upload' }
   const [success, setSuccess] = useState(null);
   const [locationMismatch, setLocationMismatch] = useState(null);
+  const [timestampReview, setTimestampReview] = useState(null); // { action: 'in'|'out', detectedIso: string }
+  const timestampReviewResolver = useRef(null);
+
+  const requestTimestampReview = ({ action, detectedIso }) => new Promise((resolve) => {
+    timestampReviewResolver.current = resolve;
+    setTimestampReview({ action, detectedIso });
+  });
+
+  const resolveTimestampReview = (confirmed) => {
+    if (timestampReviewResolver.current) {
+      timestampReviewResolver.current(Boolean(confirmed));
+      timestampReviewResolver.current = null;
+    }
+    setTimestampReview(null);
+  };
 
   if (!user?.setup_complete) return <Navigate to="/Setup" replace />;
 
@@ -431,7 +421,7 @@ export default function ClockAction() {
 
   const handleCapture = async (data) => {
     const action = captureFlow?.action;
-    if (!action) return;
+    if (!action) return false;
 
     const mode = captureFlow?.mode;
     const isUploadMode = mode === 'upload';
@@ -470,7 +460,7 @@ export default function ClockAction() {
         });
         if (!manualIso) {
           toast.error('Valid timestamp is required for this upload.');
-          return;
+          return false;
         }
         finalTimestamp = manualIso;
         imageMeta = {
@@ -480,23 +470,19 @@ export default function ClockAction() {
         };
         toast.warning('Using manual timestamp for this upload.');
       } else {
-        const reviewedIso = reviewUploadTimestamp({
+        const confirmed = await requestTimestampReview({
           detectedIso: finalTimestamp,
           action,
-          referenceStartIso: action === 'out' ? activeEntry?.time_in || '' : '',
         });
-        if (!reviewedIso) {
+        if (!confirmed) {
           toast.error('Timestamp confirmation is required for this upload.');
-          return;
+          return false;
         }
-        if (reviewedIso !== finalTimestamp) {
-          imageMeta = {
-            ...(imageMeta || {}),
-            timestamp: reviewedIso,
-            timestamp_source: 'reviewed_upload',
-          };
-        }
-        finalTimestamp = reviewedIso;
+        imageMeta = {
+          ...(imageMeta || {}),
+          timestamp: finalTimestamp,
+          timestamp_source: 'reviewed_upload_readonly',
+        };
       }
 
       const detectedTag = resolveDetectedTag(imageMeta);
@@ -569,8 +555,9 @@ export default function ClockAction() {
       } catch (error) {
         console.error('capture failed', error);
         toast.error('Unable to record this clock event. Please try again.');
+        return false;
       }
-      return;
+      return true;
     }
 
     const fallbackTimestamp = data.timestamp || new Date().toISOString();
@@ -585,15 +572,15 @@ export default function ClockAction() {
       const durationMinutes = getDurationMinutes(activeEntry.time_in, fallbackTimestamp);
       if (durationMinutes === null) {
         toast.error('Unable to compute shift duration. Please retake/upload clearer photos.');
-        return;
+        return false;
       }
       if (durationMinutes < 0) {
         toast.error('Clock-out time appears before clock-in. Please upload the correct clock-out image.');
-        return;
+        return false;
       }
       if (durationMinutes > 16 * 60) {
         toast.error('Detected shift is longer than 16 hours. Please verify the uploaded images.');
-        return;
+        return false;
       }
     }
 
@@ -735,7 +722,10 @@ export default function ClockAction() {
     } catch (error) {
       console.error('capture failed', error);
       toast.error('Unable to record this clock event. Please try again.');
+      return false;
     }
+
+    return true;
   };
 
   const openCaptureChoice = (action) => {
@@ -876,6 +866,29 @@ export default function ClockAction() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {timestampReview && (
+        <div className="fixed left-1/2 top-4 z-[60] w-[calc(100%-2rem)] max-w-lg -translate-x-1/2 rounded-2xl border border-slate-200 bg-white p-4 shadow-xl">
+          <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Timestamp Review</p>
+          <h3 className="mt-1 text-sm font-semibold text-slate-900">
+            {timestampReview.action === 'out' ? 'Clock-Out timestamp detected' : 'Clock-In timestamp detected'}
+          </h3>
+          <p className="mt-2 rounded-xl bg-slate-50 px-3 py-2 text-sm font-mono text-slate-800">
+            {formatTimestampForPrompt(timestampReview.detectedIso) || 'No timestamp detected'}
+          </p>
+          <p className="mt-2 text-xs text-slate-500">
+            This value is read-only. If incorrect, cancel and retake/upload another image.
+          </p>
+          <div className="mt-3 grid grid-cols-2 gap-2">
+            <Button variant="outline" className="border-slate-300" onClick={() => resolveTimestampReview(false)}>
+              Cancel
+            </Button>
+            <Button className="bg-blue-600 text-white hover:bg-blue-700" onClick={() => resolveTimestampReview(true)}>
+              Confirm Timestamp
+            </Button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -1,5 +1,32 @@
 import { format, differenceInMinutes, endOfMonth } from 'date-fns';
 
+const DEFAULT_SECOND_PERIOD_START_DAY = 16;
+const USER_KEY = 'timetrack_user';
+
+function clampSecondPeriodDay(rawValue) {
+  const raw = Number(rawValue);
+  if (!Number.isFinite(raw)) return DEFAULT_SECOND_PERIOD_START_DAY;
+  const rounded = Math.floor(raw);
+  if (rounded < 2 || rounded > 28) return DEFAULT_SECOND_PERIOD_START_DAY;
+  return rounded;
+}
+
+function getSecondPeriodStartDay() {
+  try {
+    const stored = localStorage.getItem(USER_KEY);
+    if (stored) {
+      const parsed = JSON.parse(stored);
+      if (parsed?.payroll_second_period_start_day !== undefined && parsed?.payroll_second_period_start_day !== null && parsed?.payroll_second_period_start_day !== '') {
+        return clampSecondPeriodDay(parsed.payroll_second_period_start_day);
+      }
+    }
+  } catch {
+    // Ignore local storage parse issues and fall back to env/default.
+  }
+
+  return clampSecondPeriodDay(import.meta.env.VITE_PAYROLL_SECOND_PERIOD_START_DAY || DEFAULT_SECOND_PERIOD_START_DAY);
+}
+
 export function calculateHours(timeIn, timeOut) {
   if (!timeIn || !timeOut) return { totalHours: '0:00', hoursDecimal: 0 };
   const diffMin = differenceInMinutes(new Date(timeOut), new Date(timeIn));
@@ -15,13 +42,16 @@ export function getPayrollPeriod(dateStr) {
   const day = date.getDate();
   const year = date.getFullYear();
   const month = date.getMonth();
-  
-  if (day <= 15) {
+
+  const secondPeriodStartDay = getSecondPeriodStartDay();
+  const firstPeriodEndDay = secondPeriodStartDay - 1;
+
+  if (day <= firstPeriodEndDay) {
     const start = format(new Date(year, month, 1), 'yyyy-MM-dd');
-    const end = format(new Date(year, month, 15), 'yyyy-MM-dd');
+    const end = format(new Date(year, month, firstPeriodEndDay), 'yyyy-MM-dd');
     return `${start} to ${end}`;
   } else {
-    const start = format(new Date(year, month, 16), 'yyyy-MM-dd');
+    const start = format(new Date(year, month, secondPeriodStartDay), 'yyyy-MM-dd');
     const end = format(endOfMonth(new Date(year, month, 1)), 'yyyy-MM-dd');
     return `${start} to ${end}`;
   }

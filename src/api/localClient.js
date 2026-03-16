@@ -86,6 +86,10 @@ function derivePreferredName(user) {
 function normalizeUser(raw) {
   const user = raw && typeof raw === 'object' ? { ...raw } : {};
   const preferredName = derivePreferredName(user);
+  const parsedPayrollStart = Number(user.payroll_second_period_start_day);
+  const payrollSecondPeriodStartDay = Number.isFinite(parsedPayrollStart)
+    ? Math.min(28, Math.max(2, Math.floor(parsedPayrollStart)))
+    : 16;
 
   return {
     ...user,
@@ -99,6 +103,7 @@ function normalizeUser(raw) {
     work_location_tag: String(user.work_location_tag || '').trim().toUpperCase(),
     data_center_location: String(user.data_center_location || '').trim(),
     location_enforcement_enabled: Boolean(user.location_enforcement_enabled ?? false),
+    payroll_second_period_start_day: payrollSecondPeriodStartDay,
   };
 }
 
@@ -289,6 +294,7 @@ export const localClient = {
               stn_accommodation: dbUser.stn_accommodation || user.stn_accommodation,
               stn_rental: dbUser.stn_rental || user.stn_rental,
               stn_gas: dbUser.stn_gas || user.stn_gas,
+              payroll_second_period_start_day: dbUser.payroll_second_period_start_day ?? user.payroll_second_period_start_day,
             });
           }
         }
@@ -336,6 +342,7 @@ export const localClient = {
             stn_accommodation: next.stn_accommodation || null,
             stn_rental: next.stn_rental || null,
             stn_gas: next.stn_gas || null,
+            payroll_second_period_start_day: next.payroll_second_period_start_day ?? null,
             location_enforcement_enabled: next.location_enforcement_enabled ?? false,
           }),
         });
@@ -474,6 +481,7 @@ export const localClient = {
                 stn_accommodation: updated.stn_accommodation || null,
                 stn_rental: updated.stn_rental || null,
                 stn_gas: updated.stn_gas || null,
+                payroll_second_period_start_day: updated.payroll_second_period_start_day ?? null,
               }),
             });
           }

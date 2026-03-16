@@ -44,6 +44,7 @@ export default function Settings() {
       stn_gas: user?.stn_gas || '',
       company_name: user?.company_name || '',
       location_enforcement_enabled: user?.location_enforcement_enabled ?? false,
+      payroll_second_period_start_day: user?.payroll_second_period_start_day ?? 16,
     }),
     [user]
   );
@@ -84,6 +85,8 @@ export default function Settings() {
         payload.stn_accommodation = form.stn_accommodation.trim() || 'N/A';
         payload.stn_rental = form.stn_rental.trim() || 'N/A';
         payload.stn_gas = form.stn_gas.trim() || 'N/A';
+        const startDay = Number(form.payroll_second_period_start_day || 16);
+        payload.payroll_second_period_start_day = Math.min(28, Math.max(2, Math.floor(startDay || 16)));
       }
 
       await localClient.auth.updateMe(payload);
@@ -258,6 +261,21 @@ export default function Settings() {
                   onChange={(e) => setField('stn_gas', e.target.value)}
                   className={inputClass}
                 />
+              </Field>
+
+              <Field label="Payroll 2nd Period Start Day">
+                <Input
+                  type="number"
+                  min={2}
+                  max={28}
+                  value={form.payroll_second_period_start_day}
+                  onChange={(e) => setField('payroll_second_period_start_day', e.target.value)}
+                  placeholder="16"
+                  className={inputClass}
+                />
+                <p className="mt-1 text-xs text-slate-500">
+                  Example: set to 15 for 1-14 and 15-end of month. Set to 16 for 1-15 and 16-end.
+                </p>
               </Field>
             </>
           )}
