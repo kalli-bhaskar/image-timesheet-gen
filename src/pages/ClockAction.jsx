@@ -522,17 +522,14 @@ export default function ClockAction() {
         const reconciled = reconcileClockOutTimestamp(activeEntry.time_in, finalTimestamp);
         finalTimestamp = reconciled.timestamp;
         const durationMinutes = reconciled.durationMinutes;
+        // Upload OCR can return noisy dates; warn on duration anomalies but do not bounce the user
+        // back to the image confirm screen after they already confirmed the timestamp.
         if (durationMinutes === null) {
-          toast.error('Unable to compute shift duration. Please retake/upload clearer photos.');
-          return;
-        }
-        if (durationMinutes < 0) {
-          toast.error('Clock-out time appears before clock-in. Please upload the correct clock-out image.');
-          return;
-        }
-        if (durationMinutes > 16 * 60) {
-          toast.error('Detected shift is longer than 16 hours. Please verify the uploaded images.');
-          return;
+          toast.warning('Could not validate shift duration from stored clock-in. Proceeding with confirmed clock-out time.');
+        } else if (durationMinutes < 0) {
+          toast.warning('Clock-out appears before clock-in after OCR normalization. Proceeding with confirmed time; please review in My Timesheets.');
+        } else if (durationMinutes > 16 * 60) {
+          toast.warning('Detected shift is longer than 16 hours. Proceeding with confirmed time; please review in My Timesheets.');
         }
         if (reconciled.adjusted) {
           toast.message('Clock-out date was auto-adjusted using OCR time for night-shift consistency.');
