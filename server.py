@@ -99,6 +99,22 @@ TIMESTAMP_RE = re.compile(
     r'(?P<time>\d{1,2}:\d{2}(?::\d{2})?\s*[AP]M)',
     re.IGNORECASE,
 )
+FULL_MONTH_TIMESTAMP_RE = re.compile(
+    r'(?P<month>January|February|March|April|May|June|July|August|September|October|November|December)\s+'
+    r'(?P<day>\d{1,2})[,\s]+'
+    r'(?P<year>\d{4})\s+'
+    r'(?P<time>\d{1,2}:\d{2}(?::\d{2})?\s*[AP]M)',
+    re.IGNORECASE,
+)
+ISO_TIMESTAMP_RE = re.compile(
+    r'(?P<value>\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)',
+    re.IGNORECASE,
+)
+SLASH_TIMESTAMP_RE = re.compile(
+    r'(?P<month>\d{1,2})/(?P<day>\d{1,2})/(?P<year>\d{4})\s+'
+    r'(?P<time>\d{1,2}:\d{2}(?::\d{2})?\s*(?:[AP]M)?)',
+    re.IGNORECASE,
+)
 COUNTY_RE = re.compile(r'([A-Za-z]+(?:\s+[A-Za-z]+)?)\s+County', re.IGNORECASE)
 
 app = Flask(__name__)
@@ -127,6 +143,21 @@ GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', '').strip()
 GEMINI_MODEL = os.getenv('GEMINI_MODEL', 'gemini-2.5-flash').strip()
 GEMINI_FALLBACK_MODELS = ['gemini-2.5-flash', 'gemini-flash-latest']
 PADDLE_OCR_INSTANCE = None
+MAX_ANALYZE_FILE_BYTES = int(os.getenv('MAX_ANALYZE_FILE_BYTES', str(12 * 1024 * 1024)))
+MAX_OCR_INPUT_SIDE = int(os.getenv('MAX_OCR_INPUT_SIDE', '2200'))
+MAX_GEMINI_INPUT_SIDE = int(os.getenv('MAX_GEMINI_INPUT_SIDE', '1800'))
+TESSERACT_TIMEOUT_SECONDS = float(os.getenv('TESSERACT_TIMEOUT_SECONDS', '6'))
+
+
+def env_flag(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return str(raw).strip().lower() in {'1', 'true', 'yes', 'on'}
+
+
+ENABLE_PADDLE_FALLBACK = env_flag('ENABLE_PADDLE_FALLBACK', True)
+ENABLE_TESSERACT_FALLBACK = env_flag('ENABLE_TESSERACT_FALLBACK', not bool(GEMINI_API_KEY))
 
 
 def get_db_connection() -> Any:
@@ -182,7 +213,21 @@ def preprocess_for_ocr(image: Image.Image) -> Image.Image:
     gray = ImageOps.grayscale(image)
     gray = ImageOps.autocontrast(gray)
     gray = ImageEnhance.Sharpness(gray).enhance(2.5)
-    return gray.resize((gray.width * 2, gray.height * 2))
+    upscaled = gray.resize((gray.width * 2, gray.height * 2))
+    return scale_image_for_ocr(upscaled, max_side=MAX_OCR_INPUT_SIDE)
+
+
+def scale_image_for_ocr(image: Image.Image, max_side: int) -> Image.Image:
+    if max_side <= 0:
+        return image
+    width, height = image.size
+    largest = max(width, height)
+    if largest <= max_side:
+        return image
+    ratio = max_side / float(largest)
+    new_size = (max(1, int(width * ratio)), max(1, int(height * ratio)))
+    resample = getattr(getattr(Image, 'Resampling', Image), 'LANCZOS')
+    return image.resize(new_size, resample)
 
 
 def image_to_png_bytes(image: Image.Image) -> bytes:
@@ -287,12 +332,27 @@ def run_paddle_ocr(image: Image.Image) -> str:
 
 
 def run_fast_ocr(image: Image.Image) -> str:
-    text = pytesseract.image_to_string(image, config='--oem 1 --psm 6')
-    collapsed = ' '.join(text.split())
-    if TIMESTAMP_RE.search(collapsed):
-        return collapsed
-    fallback = pytesseract.image_to_string(image, config='--oem 1 --psm 11')
-    return ' '.join(fallback.split())
+    safe_image = scale_image_for_ocr(image.convert('RGB').copy(), max_side=MAX_OCR_INPUT_SIDE)
+    try:
+        text = pytesseract.image_to_string(
+            safe_image,
+            config='--oem 1 --psm 6',
+            timeout=TESSERACT_TIMEOUT_SECONDS,
+        )
+        collapsed = ' '.join(text.split())
+        if TIMESTAMP_RE.search(collapsed):
+            return collapsed
+
+        fallback = pytesseract.image_to_string(
+            safe_image,
+            config='--oem 1 --psm 11',
+            timeout=TESSERACT_TIMEOUT_SECONDS,
+        )
+        return ' '.join(fallback.split())
+    except RuntimeError:
+        return ''
+    except Exception:
+        return ''
 
 
 def run_ocr_with_fallbacks(
@@ -318,39 +378,102 @@ def run_ocr_with_fallbacks(
             best = (gemini_text, 'gemini')
 
     # 2. PaddleOCR — works on the preprocessed crop
-    paddle_text = run_paddle_ocr(image)
-    if paddle_text:
-        if TIMESTAMP_RE.search(paddle_text):
-            return paddle_text, 'paddle'
-        if not best[0]:
-            best = (paddle_text, 'paddle')
+    if ENABLE_PADDLE_FALLBACK:
+        paddle_text = run_paddle_ocr(image)
+        if paddle_text:
+            if TIMESTAMP_RE.search(paddle_text):
+                return paddle_text, 'paddle'
+            if not best[0]:
+                best = (paddle_text, 'paddle')
 
     # 3. Tesseract — works on the preprocessed crop
-    tess_text = run_fast_ocr(image)
-    if TIMESTAMP_RE.search(tess_text):
-        return tess_text, 'tesseract'
-    if tess_text and not best[0]:
-        best = (tess_text, 'tesseract')
+    if ENABLE_TESSERACT_FALLBACK:
+        tess_text = run_fast_ocr(image)
+        if TIMESTAMP_RE.search(tess_text):
+            return tess_text, 'tesseract'
+        if tess_text and not best[0]:
+            best = (tess_text, 'tesseract')
 
     # Return best non-empty result for county/tag even if no timestamp found
     return best
 
 
-def parse_timestamp(ocr_text: str) -> datetime | None:
+def parse_timestamp_with_source(ocr_text: str) -> tuple[datetime | None, str]:
+    text = str(ocr_text or '').strip()
+    if not text:
+        return None, 'none'
+
     match = TIMESTAMP_RE.search(ocr_text)
-    if not match:
-        return None
-    month = match.group('month').title()
-    if month == 'Sept':
-        month = 'Sep'
-    time_text = ' '.join(match.group('time').upper().split())
-    candidate = f"{month} {match.group('day')} {match.group('year')} {time_text}"
-    for fmt in ('%b %d %Y %I:%M:%S %p', '%b %d %Y %I:%M %p'):
+    if match:
+        month = match.group('month').title()
+        if month == 'Sept':
+            month = 'Sep'
+        time_text = ' '.join(match.group('time').upper().split())
+        candidate = f"{month} {match.group('day')} {match.group('year')} {time_text}"
+        for fmt in ('%b %d %Y %I:%M:%S %p', '%b %d %Y %I:%M %p'):
+            try:
+                return datetime.strptime(candidate, fmt), 'abbr_month'
+            except ValueError:
+                continue
+
+    full_month = FULL_MONTH_TIMESTAMP_RE.search(text)
+    if full_month:
+        candidate = (
+            f"{full_month.group('month').title()} {full_month.group('day')} "
+            f"{full_month.group('year')} {' '.join(full_month.group('time').upper().split())}"
+        )
+        for fmt in ('%B %d %Y %I:%M:%S %p', '%B %d %Y %I:%M %p'):
+            try:
+                return datetime.strptime(candidate, fmt), 'full_month'
+            except ValueError:
+                continue
+
+    iso_match = ISO_TIMESTAMP_RE.search(text)
+    if iso_match:
+        iso_candidate = iso_match.group('value').replace('Z', '+00:00')
         try:
-            return datetime.strptime(candidate, fmt)
+            parsed = datetime.fromisoformat(iso_candidate)
+            parsed_dt = parsed.replace(tzinfo=None) if parsed.tzinfo else parsed
+            return parsed_dt, 'iso'
+        except ValueError:
+            pass
+
+    slash_match = SLASH_TIMESTAMP_RE.search(text)
+    if slash_match:
+        candidate = (
+            f"{int(slash_match.group('month')):02d}/{int(slash_match.group('day')):02d}/"
+            f"{slash_match.group('year')} {' '.join(slash_match.group('time').upper().split())}"
+        )
+        for fmt in (
+            '%m/%d/%Y %I:%M:%S %p',
+            '%m/%d/%Y %I:%M %p',
+            '%m/%d/%Y %H:%M:%S',
+            '%m/%d/%Y %H:%M',
+        ):
+            try:
+                return datetime.strptime(candidate, fmt), 'slash'
+            except ValueError:
+                continue
+
+    # Final fallback: parse plain local datetime forms often produced by LLM OCR.
+    compact = text.replace('T', ' ')
+    for fmt in (
+        '%Y-%m-%d %H:%M:%S',
+        '%Y-%m-%d %H:%M',
+        '%Y-%m-%d %I:%M:%S %p',
+        '%Y-%m-%d %I:%M %p',
+    ):
+        try:
+            return datetime.strptime(compact, fmt), 'local_datetime'
         except ValueError:
             continue
-    return None
+
+    return None, 'none'
+
+
+def parse_timestamp(ocr_text: str) -> datetime | None:
+    parsed, _ = parse_timestamp_with_source(ocr_text)
+    return parsed
 
 
 def parse_county(ocr_text: str) -> str | None:
@@ -412,26 +535,38 @@ def analyze_image_bytes(image_bytes: bytes, filename: str) -> dict[str, Any]:
     with Image.open(BytesIO(image_bytes)) as image:
         source_size = image.size
         # Keep a full-resolution copy for Gemini (neural models need colour/context)
-        full_copy = image.convert('RGB')
+        full_copy = scale_image_for_ocr(image.convert('RGB').copy(), max_side=MAX_GEMINI_INPUT_SIDE)
         cropped = crop_bottom_right_half(image)
         prepared = preprocess_for_ocr(cropped)
         ocr_text, ocr_engine = run_ocr_with_fallbacks(prepared, full_image=full_copy)
 
-    timestamp = parse_timestamp(ocr_text)
+    timestamp, timestamp_source = parse_timestamp_with_source(ocr_text)
 
     # Last-resort retry: full image through Tesseract when crop-based OCR missed
     crop_strategy = 'bottom-right-half'
-    if timestamp is None and ocr_engine != 'gemini':
+    if timestamp is None and ocr_engine != 'gemini' and ENABLE_TESSERACT_FALLBACK:
         full_prepared = preprocess_for_ocr(full_copy)
         retry_text = run_fast_ocr(full_prepared)
-        retry_ts = parse_timestamp(retry_text)
+        retry_ts, retry_source = parse_timestamp_with_source(retry_text)
         if retry_ts:
             ocr_text, ocr_engine, timestamp = retry_text, 'tesseract-full', retry_ts
+            timestamp_source = f'tesseract-retry:{retry_source}'
             crop_strategy = 'full-image-retry'
 
     county = parse_county(ocr_text)
     location_tag = determine_location_tag(county)
     data_center_location = TAG_TO_DATA_CENTER.get(location_tag, '')
+    preview = ' '.join(str(ocr_text or '').split())[:180]
+    app.logger.info(
+        'OCR analyze filename=%s engine=%s timestamp_found=%s timestamp_source=%s crop=%s location_tag=%s preview=%s',
+        filename,
+        ocr_engine,
+        bool(timestamp),
+        timestamp_source,
+        crop_strategy,
+        location_tag or '-',
+        preview,
+    )
     return {
         'filename': filename,
         'ocr_text': ocr_text,
@@ -1123,10 +1258,30 @@ def analyze() -> Any:
 
     results = []
     for uploaded in files:
-        image_bytes = uploaded.read()
+        image_bytes = uploaded.read(MAX_ANALYZE_FILE_BYTES + 1)
         if not image_bytes:
             continue
-        results.append(analyze_image_bytes(image_bytes, uploaded.filename or 'upload'))
+        if len(image_bytes) > MAX_ANALYZE_FILE_BYTES:
+            results.append(
+                {
+                    'filename': uploaded.filename or 'upload',
+                    'error': f'File too large for OCR (max {MAX_ANALYZE_FILE_BYTES} bytes).',
+                    'timestamp': None,
+                    'location_tag': '',
+                }
+            )
+            continue
+        try:
+            results.append(analyze_image_bytes(image_bytes, uploaded.filename or 'upload'))
+        except Exception as exc:
+            results.append(
+                {
+                    'filename': uploaded.filename or 'upload',
+                    'error': f'Analyze failed: {str(exc)}',
+                    'timestamp': None,
+                    'location_tag': '',
+                }
+            )
 
     return jsonify({'count': len(results), 'results': results})
 
