@@ -741,14 +741,40 @@ export default function ClockAction() {
     setCaptureFlow(null);
   };
 
+  const timestampReviewBanner = timestampReview ? (
+    <div className="fixed left-1/2 top-4 z-[70] w-[calc(100%-2rem)] max-w-lg -translate-x-1/2 rounded-2xl border border-slate-200 bg-white p-4 shadow-xl">
+      <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Timestamp Review</p>
+      <h3 className="mt-1 text-sm font-semibold text-slate-900">
+        {timestampReview.action === 'out' ? 'Clock-Out timestamp detected' : 'Clock-In timestamp detected'}
+      </h3>
+      <p className="mt-2 rounded-xl bg-slate-50 px-3 py-2 text-sm font-mono text-slate-800">
+        {formatTimestampForPrompt(timestampReview.detectedIso) || 'No timestamp detected'}
+      </p>
+      <p className="mt-2 text-xs text-slate-500">
+        This value is read-only. If incorrect, cancel and retake/upload another image.
+      </p>
+      <div className="mt-3 grid grid-cols-2 gap-2">
+        <Button variant="outline" className="border-slate-300" onClick={() => resolveTimestampReview(false)}>
+          Cancel
+        </Button>
+        <Button className="bg-blue-600 text-white hover:bg-blue-700" onClick={() => resolveTimestampReview(true)}>
+          Confirm Timestamp
+        </Button>
+      </div>
+    </div>
+  ) : null;
+
   if (captureFlow?.mode) {
     return (
-      <CameraCapture
-        label={captureFlow.action === 'in' ? 'Clock In Photo' : 'Clock Out Photo'}
-        captureMode={captureFlow.mode}
-        onCapture={handleCapture}
-        onCancel={closeCapture}
-      />
+      <>
+        <CameraCapture
+          label={captureFlow.action === 'in' ? 'Clock In Photo' : 'Clock Out Photo'}
+          captureMode={captureFlow.mode}
+          onCapture={handleCapture}
+          onCancel={closeCapture}
+        />
+        {timestampReviewBanner}
+      </>
     );
   }
 
@@ -867,28 +893,7 @@ export default function ClockAction() {
         </AlertDialogContent>
       </AlertDialog>
 
-      {timestampReview && (
-        <div className="fixed left-1/2 top-4 z-[60] w-[calc(100%-2rem)] max-w-lg -translate-x-1/2 rounded-2xl border border-slate-200 bg-white p-4 shadow-xl">
-          <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Timestamp Review</p>
-          <h3 className="mt-1 text-sm font-semibold text-slate-900">
-            {timestampReview.action === 'out' ? 'Clock-Out timestamp detected' : 'Clock-In timestamp detected'}
-          </h3>
-          <p className="mt-2 rounded-xl bg-slate-50 px-3 py-2 text-sm font-mono text-slate-800">
-            {formatTimestampForPrompt(timestampReview.detectedIso) || 'No timestamp detected'}
-          </p>
-          <p className="mt-2 text-xs text-slate-500">
-            This value is read-only. If incorrect, cancel and retake/upload another image.
-          </p>
-          <div className="mt-3 grid grid-cols-2 gap-2">
-            <Button variant="outline" className="border-slate-300" onClick={() => resolveTimestampReview(false)}>
-              Cancel
-            </Button>
-            <Button className="bg-blue-600 text-white hover:bg-blue-700" onClick={() => resolveTimestampReview(true)}>
-              Confirm Timestamp
-            </Button>
-          </div>
-        </div>
-      )}
+      {timestampReviewBanner}
     </div>
   );
 }
