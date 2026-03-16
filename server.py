@@ -94,9 +94,9 @@ HEADER_ALIASES = {
 
 TIMESTAMP_RE = re.compile(
     r'(?P<month>Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\s+'
-    r'(?P<day>\d{1,2}),\s+'
+    r'(?P<day>\d{1,2})[,\s]+'
     r'(?P<year>\d{4})\s+'
-    r'(?P<time>\d{1,2}:\d{2}:\d{2}\s+[AP]M)',
+    r'(?P<time>\d{1,2}:\d{2}(?::\d{2})?\s*[AP]M)',
     re.IGNORECASE,
 )
 COUNTY_RE = re.compile(r'([A-Za-z]+(?:\s+[A-Za-z]+)?)\s+County', re.IGNORECASE)
@@ -322,10 +322,14 @@ def parse_timestamp(ocr_text: str) -> datetime | None:
     month = match.group('month').title()
     if month == 'Sept':
         month = 'Sep'
-    return datetime.strptime(
-        f"{month} {match.group('day')}, {match.group('year')} {match.group('time').upper()}",
-        '%b %d, %Y %I:%M:%S %p',
-    )
+    time_text = ' '.join(match.group('time').upper().split())
+    candidate = f"{month} {match.group('day')} {match.group('year')} {time_text}"
+    for fmt in ('%b %d %Y %I:%M:%S %p', '%b %d %Y %I:%M %p'):
+        try:
+            return datetime.strptime(candidate, fmt)
+        except ValueError:
+            continue
+    return None
 
 
 def parse_county(ocr_text: str) -> str | None:

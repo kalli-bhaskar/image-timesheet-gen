@@ -110,7 +110,7 @@ function getDurationMinutes(startIso, endIso) {
   return Math.round((end.getTime() - start.getTime()) / 60000);
 }
 
-function parseManualTimestampInput(raw) {
+function parseManualTimestampInput(raw, { referenceStartIso = '', assumeClockOut = false } = {}) {
   const text = String(raw || '').trim();
   if (!text) return null;
 
@@ -122,11 +122,81 @@ function parseManualTimestampInput(raw) {
 
   // Accept: YYYY-MM-DD HH:MM:SS or YYYY/MM/DD HH:MM:SS
   const match = text.match(/^(\d{4})[-/](\d{2})[-/](\d{2})\s+(\d{2}):(\d{2})(?::(\d{2}))?$/);
-  if (!match) return null;
-  const [, y, m, d, hh, mm, ss] = match;
-  const local = new Date(Number(y), Number(m) - 1, Number(d), Number(hh), Number(mm), Number(ss || '0'));
-  if (Number.isNaN(local.getTime())) return null;
-  return local.toISOString();
+  if (match) {
+    const [, y, m, d, hh, mm, ss] = match;
+    const local = new Date(Number(y), Number(m) - 1, Number(d), Number(hh), Number(mm), Number(ss || '0'));
+    if (Number.isNaN(local.getTime())) return null;
+    return local.toISOString();
+  }
+
+  // Accept time-only input: "8:00", "08:00", "8:00 AM", "08:00:15 PM"
+  const time12h = text.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?\s*([AP]M)$/i);
+  const time24h = text.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+  if (!time12h && !time24h) return null;
+
+  let hours = 0;
+  let minutes = 0;
+  let seconds = 0;
+
+  if (time12h) {
+    const rawHours = Number(time12h[1]);
+    minutes = Number(time12h[2]);
+    seconds = Number(time12h[3] || '0');
+    const meridiem = String(time12h[4] || '').toUpperCase();
+    if (rawHours < 1 || rawHours > 12 || minutes > 59 || seconds > 59) return null;
+    hours = rawHours % 12;
+    if (meridiem === 'PM') hours += 12;
+  } else if (time24h) {
+    hours = Number(time24h[1]);
+    minutes = Number(time24h[2]);
+    seconds = Number(time24h[3] || '0');
+    if (hours > 23 || minutes > 59 || seconds > 59) return null;
+  }
+
+  const reference = new Date(referenceStartIso || Date.now());
+  if (Number.isNaN(reference.getTime())) return null;
+
+  const candidate = new Date(reference);
+  candidate.setHours(hours, minutes, seconds, 0);
+
+  if (assumeClockOut && referenceStartIso) {
+    const start = new Date(referenceStartIso);
+    if (!Number.isNaN(start.getTime()) && candidate.getTime() < start.getTime()) {
+      candidate.setDate(candidate.getDate() + 1);
+    }
+  }
+
+  return candidate.toISOString();
+}
+
+function reconcileClockOutTimestamp(clockInIso, candidateIso) {
+  const maxMinutes = 16 * 60;
+  const start = new Date(clockInIso);
+  const candidate = new Date(candidateIso);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(candidate.getTime())) {
+    return { timestamp: candidateIso, adjusted: false, durationMinutes: null };
+  }
+
+  const rawDuration = Math.round((candidate.getTime() - start.getTime()) / 60000);
+  if (rawDuration >= 0 && rawDuration <= maxMinutes) {
+    return { timestamp: candidate.toISOString(), adjusted: false, durationMinutes: rawDuration };
+  }
+
+  // If OCR date is noisy, keep OCR time-of-day and align to clock-in day, then next day.
+  const sameDay = new Date(start);
+  sameDay.setHours(candidate.getHours(), candidate.getMinutes(), candidate.getSeconds(), candidate.getMilliseconds());
+  const sameDayDuration = Math.round((sameDay.getTime() - start.getTime()) / 60000);
+  if (sameDayDuration >= 0 && sameDayDuration <= maxMinutes) {
+    return { timestamp: sameDay.toISOString(), adjusted: true, durationMinutes: sameDayDuration };
+  }
+
+  const nextDay = new Date(sameDay.getTime() + 24 * 60 * 60 * 1000);
+  const nextDayDuration = Math.round((nextDay.getTime() - start.getTime()) / 60000);
+  if (nextDayDuration >= 0 && nextDayDuration <= maxMinutes) {
+    return { timestamp: nextDay.toISOString(), adjusted: true, durationMinutes: nextDayDuration };
+  }
+
+  return { timestamp: candidate.toISOString(), adjusted: false, durationMinutes: rawDuration };
 }
 
 async function submitShiftMetaToBackend({ clockInMeta, clockOutMeta, profile, actor }) {
@@ -331,9 +401,12 @@ export default function ClockAction() {
       let finalTimestamp = imageMeta?.timestamp || null;
       if (!finalTimestamp) {
         const entered = window.prompt(
-          'Could not read overlay timestamp. Enter timestamp manually in YYYY-MM-DD HH:MM:SS (24h) or ISO format.'
+          'Could not read overlay timestamp. Enter timestamp manually in YYYY-MM-DD HH:MM:SS, ISO, or time only (e.g. 8:00 AM).'
         );
-        const manualIso = parseManualTimestampInput(entered);
+        const manualIso = parseManualTimestampInput(entered, {
+          referenceStartIso: action === 'out' ? activeEntry?.time_in || '' : '',
+          assumeClockOut: action === 'out',
+        });
         if (!manualIso) {
           toast.error('Valid timestamp is required for this upload.');
           return;
@@ -367,7 +440,9 @@ export default function ClockAction() {
       }
 
       if (action === 'out' && activeEntry?.time_in) {
-        const durationMinutes = getDurationMinutes(activeEntry.time_in, finalTimestamp);
+        const reconciled = reconcileClockOutTimestamp(activeEntry.time_in, finalTimestamp);
+        finalTimestamp = reconciled.timestamp;
+        const durationMinutes = reconciled.durationMinutes;
         if (durationMinutes === null) {
           toast.error('Unable to compute shift duration. Please retake/upload clearer photos.');
           return;
@@ -379,6 +454,9 @@ export default function ClockAction() {
         if (durationMinutes > 16 * 60) {
           toast.error('Detected shift is longer than 16 hours. Please verify the uploaded images.');
           return;
+        }
+        if (reconciled.adjusted) {
+          toast.message('Clock-out date was auto-adjusted using OCR time for night-shift consistency.');
         }
       }
 
@@ -530,7 +608,9 @@ export default function ClockAction() {
           const mappedByCity = imageDataCenterLocation ? tagContext.cityToTag.get(imageDataCenterLocation) : '';
           const detectedTag = normalizeLocationTag(mappedByCounty || mappedByCity || imageMeta?.location_tag || activeEntry?.data_center_location);
           const clockOutMeta = imageMeta ? { ...imageMeta, location_tag: detectedTag || imageMeta.location_tag } : optimisticMeta;
-          const finalTimestamp = clockOutMeta?.timestamp || fallbackTimestamp;
+          let finalTimestamp = clockOutMeta?.timestamp || fallbackTimestamp;
+          const reconciled = reconcileClockOutTimestamp(activeEntry.time_in, finalTimestamp);
+          finalTimestamp = reconciled.timestamp;
 
           const { totalHours, hoursDecimal } = calculateHours(activeEntry.time_in, finalTimestamp);
           await localClient.entities.TimesheetEntry.update(activeEntry.id, {
