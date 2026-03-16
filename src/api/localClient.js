@@ -364,6 +364,8 @@ export const localClient = {
   entities: {
     TimesheetEntry: {
       async filter(filterObj = {}, sortExpr, limit) {
+        const localRows = readJson(ENTRIES_KEY, []);
+        const localFiltered = applyFilter(localRows, filterObj);
         // Prefer DB-backed entries when backend is available.
         try {
           const params = new URLSearchParams();
@@ -379,16 +381,35 @@ export const localClient = {
           if (res.ok) {
             const data = await res.json();
             if (Array.isArray(data?.entries)) {
-              const sortedRemote = applySort(data.entries, sortExpr);
-              return typeof limit === 'number' ? sortedRemote.slice(0, limit) : sortedRemote;
+              const remoteEntries = data.entries;
+
+              // If backend is temporarily stale/empty after local clock-in, keep local UX responsive.
+              if (remoteEntries.length === 0 && localFiltered.length > 0) {
+                const sortedLocal = applySort(localFiltered, sortExpr);
+                return typeof limit === 'number' ? sortedLocal.slice(0, limit) : sortedLocal;
+              }
+
+              // Merge local-only pending entries so Clock In -> Clock Out transition is immediate.
+              const remoteKeys = new Set(
+                remoteEntries.map((entry) =>
+                  `${entry.employee_email || ''}|${entry.time_in || ''}|${entry.status || ''}`
+                )
+              );
+              const localOnly = localFiltered.filter((entry) => {
+                const key = `${entry.employee_email || ''}|${entry.time_in || ''}|${entry.status || ''}`;
+                return !remoteKeys.has(key);
+              });
+
+              const merged = [...remoteEntries, ...localOnly];
+              const sortedMerged = applySort(merged, sortExpr);
+              return typeof limit === 'number' ? sortedMerged.slice(0, limit) : sortedMerged;
             }
           }
         } catch {
           // Fall back to local cache.
         }
 
-        const rows = readJson(ENTRIES_KEY, []);
-        const filtered = applyFilter(rows, filterObj);
+        const filtered = localFiltered;
         const sorted = applySort(filtered, sortExpr);
         return typeof limit === 'number' ? sorted.slice(0, limit) : sorted;
       },
