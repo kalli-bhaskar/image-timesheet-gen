@@ -169,6 +169,61 @@ function parseManualTimestampInput(raw, { referenceStartIso = '', assumeClockOut
   return candidate.toISOString();
 }
 
+function normalizeBackendDetectedTimestamp(raw, { referenceStartIso = '', assumeClockOut = false } = {}) {
+  const text = String(raw || '').trim();
+  if (!text) return null;
+
+  // If backend returned a naive ISO-like value (no timezone), treat it as local wall-clock time.
+  const naiveIsoLike = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?$/;
+  if (naiveIsoLike.test(text)) {
+    return parseManualTimestampInput(text.replace('T', ' '), {
+      referenceStartIso,
+      assumeClockOut,
+    });
+  }
+
+  const parsed = new Date(text);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed.toISOString();
+}
+
+function formatTimestampForPrompt(isoString) {
+  const date = new Date(isoString || '');
+  if (Number.isNaN(date.getTime())) return '';
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  const hours = String(date.getHours()).padStart(2, '0');
+  const minutes = String(date.getMinutes()).padStart(2, '0');
+  const seconds = String(date.getSeconds()).padStart(2, '0');
+  return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+}
+
+function reviewUploadTimestamp({
+  detectedIso,
+  action,
+  referenceStartIso = '',
+  allowBlank = false,
+}) {
+  const defaultValue = formatTimestampForPrompt(detectedIso);
+  const entered = window.prompt(
+    action === 'out'
+      ? 'Review clock-out timestamp. Edit if OCR picked the wrong date/time. You can also enter time only, for example 8:00 AM.'
+      : 'Review clock-in timestamp. Edit if OCR picked the wrong date/time.',
+    defaultValue
+  );
+
+  if (entered === null) return allowBlank ? detectedIso : null;
+
+  const trimmed = String(entered || '').trim();
+  if (!trimmed) return allowBlank ? detectedIso : null;
+
+  return parseManualTimestampInput(trimmed, {
+    referenceStartIso,
+    assumeClockOut: action === 'out',
+  });
+}
+
 function reconcileClockOutTimestamp(clockInIso, candidateIso) {
   const maxMinutes = 16 * 60;
   const start = new Date(clockInIso);
@@ -398,7 +453,13 @@ export default function ClockAction() {
         console.error('analyze failed', error);
       }
 
-      let finalTimestamp = imageMeta?.timestamp || null;
+      let finalTimestamp = normalizeBackendDetectedTimestamp(imageMeta?.timestamp, {
+        referenceStartIso: action === 'out' ? activeEntry?.time_in || '' : '',
+        assumeClockOut: action === 'out',
+      });
+      if (imageMeta && finalTimestamp) {
+        imageMeta = { ...imageMeta, timestamp: finalTimestamp };
+      }
       if (!finalTimestamp) {
         const entered = window.prompt(
           'Could not read overlay timestamp. Enter timestamp manually in YYYY-MM-DD HH:MM:SS, ISO, or time only (e.g. 8:00 AM).'
@@ -418,6 +479,24 @@ export default function ClockAction() {
           timestamp_source: 'manual_entry',
         };
         toast.warning('Using manual timestamp for this upload.');
+      } else {
+        const reviewedIso = reviewUploadTimestamp({
+          detectedIso: finalTimestamp,
+          action,
+          referenceStartIso: action === 'out' ? activeEntry?.time_in || '' : '',
+        });
+        if (!reviewedIso) {
+          toast.error('Timestamp confirmation is required for this upload.');
+          return;
+        }
+        if (reviewedIso !== finalTimestamp) {
+          imageMeta = {
+            ...(imageMeta || {}),
+            timestamp: reviewedIso,
+            timestamp_source: 'reviewed_upload',
+          };
+        }
+        finalTimestamp = reviewedIso;
       }
 
       const detectedTag = resolveDetectedTag(imageMeta);

@@ -103,6 +103,23 @@ COUNTY_RE = re.compile(r'([A-Za-z]+(?:\s+[A-Za-z]+)?)\s+County', re.IGNORECASE)
 
 app = Flask(__name__)
 
+
+def load_local_env(env_path: Path) -> None:
+    if not env_path.exists():
+        return
+    for raw_line in env_path.read_text(encoding='utf-8').splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith('#') or '=' not in line:
+            continue
+        key, value = line.split('=', 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
+load_local_env(ROOT / '.env.local')
+
 DATABASE_URL = os.getenv('DATABASE_URL') or os.getenv('POSTGRES_URL') or os.getenv('POSTGRES_PRISMA_URL')
 DB_ENABLED = bool(DATABASE_URL and psycopg)
 DB_BOOTSTRAPPED = False
@@ -185,9 +202,13 @@ def run_gemini_ocr(image: Image.Image) -> str:
                 'parts': [
                     {
                         'text': (
-                            'Read all visible text from this image exactly. '
-                            'Focus on timestamp overlay and location text. '
-                            'Return plain text only.'
+                            'You are reading a work-photo screenshot for timesheet OCR. '
+                            'Highest priority: find and transcribe the timestamp overlay exactly as shown in the image, '
+                            'including month, day, year, time, and AM/PM. '
+                            'Second priority: transcribe nearby county, city, or location words that belong to the same overlay. '
+                            'Ignore unrelated company boards, street addresses, building signs, slogans, and background text unless no overlay text is readable. '
+                            'If a timestamp is visible, put that timestamp text first in the response. '
+                            'Return plain text only, with no explanation.'
                         )
                     },
                     {
