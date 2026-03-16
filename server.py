@@ -140,8 +140,33 @@ DATABASE_URL = os.getenv('DATABASE_URL') or os.getenv('POSTGRES_URL') or os.gete
 DB_ENABLED = bool(DATABASE_URL and psycopg)
 DB_BOOTSTRAPPED = False
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', '').strip()
-GEMINI_MODEL = os.getenv('GEMINI_MODEL', 'gemini-2.5-flash').strip()
-GEMINI_FALLBACK_MODELS = ['gemini-2.5-flash', 'gemini-flash-latest']
+GEMINI_MODEL = os.getenv('GEMINI_MODEL', 'gemini-3.1-flash-lite').strip()
+GEMINI_FALLBACK_MODELS = ['gemini-3.1-flash-lite', 'gemini-2.5-flash', 'gemini-flash-latest']
+
+
+def parse_csv_env(name: str) -> list[str]:
+    raw = os.getenv(name, '')
+    if not raw:
+        return []
+    return [item.strip() for item in raw.split(',') if item.strip()]
+
+
+def dedupe_keep_order(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    output: list[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        output.append(value)
+    return output
+
+
+_manual_models = parse_csv_env('GEMINI_MODELS')
+GEMINI_MODEL_CANDIDATES = dedupe_keep_order(
+    _manual_models if _manual_models else [GEMINI_MODEL] + [m for m in GEMINI_FALLBACK_MODELS if m != GEMINI_MODEL]
+)
+
 PADDLE_OCR_INSTANCE = None
 MAX_ANALYZE_FILE_BYTES = int(os.getenv('MAX_ANALYZE_FILE_BYTES', str(12 * 1024 * 1024)))
 MAX_OCR_INPUT_SIDE = int(os.getenv('MAX_OCR_INPUT_SIDE', '2200'))
@@ -157,7 +182,7 @@ def env_flag(name: str, default: bool) -> bool:
 
 
 ENABLE_PADDLE_FALLBACK = env_flag('ENABLE_PADDLE_FALLBACK', True)
-ENABLE_TESSERACT_FALLBACK = env_flag('ENABLE_TESSERACT_FALLBACK', not bool(GEMINI_API_KEY))
+ENABLE_TESSERACT_FALLBACK = env_flag('ENABLE_TESSERACT_FALLBACK', True)
 
 
 def get_db_connection() -> Any:
@@ -267,8 +292,8 @@ def run_gemini_ocr(image: Image.Image) -> str:
         ]
     }
 
-    model_candidates = [GEMINI_MODEL] + [m for m in GEMINI_FALLBACK_MODELS if m != GEMINI_MODEL]
-    for model_name in model_candidates:
+    last_error = 'none'
+    for model_name in GEMINI_MODEL_CANDIDATES:
         try:
             url = f'https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={GEMINI_API_KEY}'
             req = urllib_request.Request(
@@ -291,11 +316,29 @@ def run_gemini_ocr(image: Image.Image) -> str:
             joined = ' '.join(' '.join(texts).split())
             if joined:
                 return joined
+            last_error = 'empty_response'
+        except urllib_error.HTTPError as exc:
+            body = ''
+            try:
+                body = exc.read().decode('utf-8', 'ignore')
+            except Exception:
+                body = ''
+            lowered = f'{exc} {body}'.lower()
+            if any(token in lowered for token in ('resource_exhausted', 'quota', 'rate limit', 'too many requests')):
+                app.logger.warning('Gemini OCR quota/rate-limit model=%s status=%s', model_name, exc.code)
+                last_error = 'quota_or_rate_limit'
+            else:
+                app.logger.warning('Gemini OCR HTTP error model=%s status=%s', model_name, exc.code)
+                last_error = f'http_{exc.code}'
+            continue
         except (urllib_error.URLError, TimeoutError, ValueError, KeyError, json.JSONDecodeError):
+            last_error = 'network_or_parse_error'
             continue
         except Exception:
+            last_error = 'unknown_error'
             continue
 
+    app.logger.warning('Gemini OCR unavailable models=%s reason=%s', ','.join(GEMINI_MODEL_CANDIDATES), last_error)
     return ''
 
 
