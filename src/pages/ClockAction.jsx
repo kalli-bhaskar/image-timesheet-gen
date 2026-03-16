@@ -548,6 +548,7 @@ export default function ClockAction() {
             await submitShiftMetaToBackend({ clockInMeta: imageMeta, profile, actor });
           } catch (error) {
             console.error('submit_shift_meta clock-in failed', error);
+            toast.warning('Clocked in locally. Backend sync failed, so this entry may not appear on other devices yet.');
           }
         } else {
           await clockOutMutation.mutateAsync({ ...data, timestamp: finalTimestamp, imageMeta, deferBackendSync: false });
@@ -610,6 +611,7 @@ export default function ClockAction() {
         };
         void submitShiftMetaToBackend({ clockInMeta: optimisticMeta, profile, actor }).catch((error) => {
           console.error('submit_shift_meta clock-in failed', error);
+          toast.warning('Clocked in locally. Backend sync failed, so this entry may not appear on other devices yet.');
         });
 
         // OCR enrichment runs in background so clock-in appears instantly on dashboard.

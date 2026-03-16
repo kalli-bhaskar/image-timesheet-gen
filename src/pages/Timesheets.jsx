@@ -22,6 +22,8 @@ export default function Timesheets() {
   const { user } = useAuth();
   const [search, setSearch] = useState('');
   const [periodFilter, setPeriodFilter] = useState('all');
+  const [fromDate, setFromDate] = useState('');
+  const [toDate, setToDate] = useState('');
 
   if (!user?.setup_complete) return <Navigate to="/Setup" replace />;
   if (user.user_role !== 'manager') return <Navigate to="/Dashboard" replace />;
@@ -42,11 +44,23 @@ export default function Timesheets() {
   // Get unique payroll periods
   const periods = [...new Set(managedEntries.map((e) => e.payroll_period).filter(Boolean))].sort().reverse();
   const currentPeriod = getPayrollPeriod(new Date().toISOString());
+  const now = new Date();
+  const monthStart = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
+  const monthLastDay = String(new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate()).padStart(2, '0');
+  const monthEnd = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${monthLastDay}`;
+  const monthEntries = managedEntries.filter((entry) => {
+    const date = String(entry.date || '').slice(0, 10);
+    return date >= monthStart && date <= monthEnd;
+  });
+  const monthHours = monthEntries.reduce((sum, entry) => sum + safeHoursDecimal(entry), 0);
+  const monthPay = monthEntries.reduce((sum, entry) => sum + safeHoursDecimal(entry) * Number(entry.hourly_rate || 0), 0);
 
   const filtered = managedEntries.filter((e) => {
     const nameMatch = (e.employee_name || '').toLowerCase().includes(search.toLowerCase());
     const periodMatch = periodFilter === 'all' || e.payroll_period === periodFilter;
-    return nameMatch && periodMatch;
+    const date = String(e.date || '').slice(0, 10);
+    const dateMatch = (!fromDate || date >= fromDate) && (!toDate || date <= toDate);
+    return nameMatch && periodMatch && dateMatch;
   });
 
   const handleExport = () => {
@@ -78,6 +92,17 @@ export default function Timesheets() {
 
       <PayrollPeriodBadge />
 
+      <div className="bg-white rounded-2xl p-3 border border-slate-100 grid grid-cols-2 gap-3">
+        <div>
+          <p className="text-[11px] uppercase tracking-wide text-slate-500">This Month Hours</p>
+          <p className="text-lg font-semibold text-slate-900">{monthHours.toFixed(1)}h</p>
+        </div>
+        <div>
+          <p className="text-[11px] uppercase tracking-wide text-slate-500">This Month Est. Pay</p>
+          <p className="text-lg font-semibold text-slate-900">${monthPay.toFixed(2)}</p>
+        </div>
+      </div>
+
       <div className="flex gap-2">
         <div className="relative flex-1">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
@@ -102,6 +127,17 @@ export default function Timesheets() {
             ))}
           </SelectContent>
         </Select>
+      </div>
+
+      <div className="bg-white rounded-2xl p-3 border border-slate-100 grid grid-cols-2 gap-2">
+        <div>
+          <label className="text-xs text-slate-500">From</label>
+          <input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} className="mt-1 w-full rounded-lg border border-slate-200 px-2 py-1.5 text-sm" />
+        </div>
+        <div>
+          <label className="text-xs text-slate-500">To</label>
+          <input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} className="mt-1 w-full rounded-lg border border-slate-200 px-2 py-1.5 text-sm" />
+        </div>
       </div>
 
       {isLoading ? (

@@ -448,7 +448,7 @@ def run_ocr_with_fallbacks(
     gemini_input = full_image if full_image is not None else image
     gemini_text = run_gemini_ocr(gemini_input)
     if gemini_text:
-        if TIMESTAMP_RE.search(gemini_text):
+        if parse_timestamp(gemini_text):
             return gemini_text, 'gemini'
         if not best[0]:
             best = (gemini_text, 'gemini')
@@ -457,7 +457,7 @@ def run_ocr_with_fallbacks(
     if ENABLE_PADDLE_FALLBACK:
         paddle_text = run_paddle_ocr(image)
         if paddle_text:
-            if TIMESTAMP_RE.search(paddle_text):
+            if parse_timestamp(paddle_text):
                 return paddle_text, 'paddle'
             if not best[0]:
                 best = (paddle_text, 'paddle')
@@ -465,7 +465,7 @@ def run_ocr_with_fallbacks(
     # 3. Tesseract — works on the preprocessed crop
     if ENABLE_TESSERACT_FALLBACK:
         tess_text = run_fast_ocr(image)
-        if TIMESTAMP_RE.search(tess_text):
+        if parse_timestamp(tess_text):
             return tess_text, 'tesseract'
         if tess_text and not best[0]:
             best = (tess_text, 'tesseract')
@@ -717,9 +717,10 @@ def write_shift_to_workbook(
     if not shift_dt:
         raise ValueError('Unable to determine a shift date from OCR output.')
 
-    template_path = get_template_path(shift_dt)
     output_path = UPLOADS_DIR / 'timesheet_latest.xlsx'
-    copyfile(template_path, output_path)
+    if not output_path.exists():
+        template_path = get_template_path(shift_dt)
+        copyfile(template_path, output_path)
 
     workbook = load_workbook(output_path)
     sheet = workbook.active

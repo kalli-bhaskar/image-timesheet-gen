@@ -19,6 +19,8 @@ import {
 export default function MyTimesheets() {
   const { user } = useAuth();
   const [photoPreview, setPhotoPreview] = useState(null);
+  const [fromDate, setFromDate] = useState('');
+  const [toDate, setToDate] = useState('');
 
   if (!user?.setup_complete) return <Navigate to="/Setup" replace />;
 
@@ -29,8 +31,18 @@ export default function MyTimesheets() {
 
   const completedEntries = entries.filter((e) => e.status === 'completed');
 
+  const inSelectedRange = (entry) => {
+    const date = String(entry.date || '').slice(0, 10);
+    if (!date) return false;
+    if (fromDate && date < fromDate) return false;
+    if (toDate && date > toDate) return false;
+    return true;
+  };
+
+  const rangeEntries = completedEntries.filter(inSelectedRange);
+
   // Group by payroll period
-  const grouped = completedEntries.reduce((acc, entry) => {
+  const grouped = rangeEntries.reduce((acc, entry) => {
     const period = entry.payroll_period || 'Unknown';
     if (!acc[period]) acc[period] = [];
     acc[period].push(entry);
@@ -38,10 +50,20 @@ export default function MyTimesheets() {
   }, {});
 
   const currentPeriod = getPayrollPeriod(new Date().toISOString());
+  const now = new Date();
+  const monthStart = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
+  const monthLastDay = String(new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate()).padStart(2, '0');
+  const monthEnd = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${monthLastDay}`;
+  const monthlyEntries = completedEntries.filter((entry) => {
+    const date = String(entry.date || '').slice(0, 10);
+    return date >= monthStart && date <= monthEnd;
+  });
+  const monthlyHours = monthlyEntries.reduce((sum, entry) => sum + safeHoursDecimal(entry), 0);
+  const monthlyPay = monthlyEntries.reduce((sum, entry) => sum + safeHoursDecimal(entry) * Number(entry.hourly_rate || 0), 0);
 
   const handleDownload = () => {
-    if (!completedEntries.length) return;
-    const sanitized = completedEntries.map((entry) => ({
+    if (!rangeEntries.length) return;
+    const sanitized = rangeEntries.map((entry) => ({
       ...entry,
       hours_decimal: safeHoursDecimal(entry),
     }));
@@ -57,7 +79,7 @@ export default function MyTimesheets() {
         </div>
         <Button
           onClick={handleDownload}
-          disabled={!completedEntries.length}
+          disabled={!rangeEntries.length}
           className="bg-green-600 hover:bg-green-700 text-white"
         >
           <Download className="w-4 h-4 mr-2" />
@@ -67,11 +89,33 @@ export default function MyTimesheets() {
 
       <PayrollPeriodBadge />
 
+      <div className="bg-white rounded-2xl p-3 border border-slate-100 grid grid-cols-2 gap-3">
+        <div>
+          <p className="text-[11px] uppercase tracking-wide text-slate-500">This Month Hours</p>
+          <p className="text-lg font-semibold text-slate-900">{monthlyHours.toFixed(1)}h</p>
+        </div>
+        <div>
+          <p className="text-[11px] uppercase tracking-wide text-slate-500">This Month Est. Pay</p>
+          <p className="text-lg font-semibold text-slate-900">${monthlyPay.toFixed(2)}</p>
+        </div>
+      </div>
+
+      <div className="bg-white rounded-2xl p-3 border border-slate-100 grid grid-cols-2 gap-2">
+        <div>
+          <label className="text-xs text-slate-500">From</label>
+          <input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} className="mt-1 w-full rounded-lg border border-slate-200 px-2 py-1.5 text-sm" />
+        </div>
+        <div>
+          <label className="text-xs text-slate-500">To</label>
+          <input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} className="mt-1 w-full rounded-lg border border-slate-200 px-2 py-1.5 text-sm" />
+        </div>
+      </div>
+
       {isLoading ? (
         <div className="flex justify-center py-12">
           <div className="w-6 h-6 border-2 border-slate-200 border-t-slate-800 rounded-full animate-spin" />
         </div>
-      ) : completedEntries.length === 0 ? (
+      ) : rangeEntries.length === 0 ? (
         <div className="bg-white rounded-2xl p-8 text-center border border-slate-100">
           <Clock className="w-8 h-8 text-slate-300 mx-auto mb-2" />
           <p className="text-slate-500 text-sm">No completed entries yet</p>
