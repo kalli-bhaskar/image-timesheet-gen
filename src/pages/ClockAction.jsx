@@ -9,6 +9,7 @@ import CameraCapture from '../components/CameraCapture';
 import { Button } from '@/components/ui/button';
 import { LogIn, LogOut, CheckCircle2, Clock, Camera, Upload } from 'lucide-react';
 import { toast } from 'sonner';
+import { analyzeImageClientSide } from '@/lib/analyzeImageClientSide';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -76,20 +77,17 @@ function getAllowedLocationTags(user, tagContext) {
 
 async function analyzeImageWithBackend(file) {
   if (!file) return null;
-  const formData = new FormData();
-  formData.append('files', file);
 
-  const response = await fetch(`${BACKEND_BASE_URL}/analyze`, {
-    method: 'POST',
-    body: formData,
-  });
-
-  if (!response.ok) {
-    throw new Error(`Analyze failed with status ${response.status}`);
+  // Strict client-side OCR: do not send images to backend.
+  if (import.meta.env.VITE_GEMINI_API_KEY) {
+    try {
+      const result = await analyzeImageClientSide(file);
+      if (result) return result;
+    } catch (err) {
+      console.warn('Client-side Gemini OCR failed:', err?.message);
+    }
   }
-
-  const json = await response.json();
-  return json?.results?.[0] || null;
+  return null;
 }
 
 function toMetaFallback({ timestamp, locationTag, photoUrl }) {

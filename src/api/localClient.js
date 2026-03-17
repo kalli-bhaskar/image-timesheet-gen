@@ -1,6 +1,9 @@
 const USER_KEY = 'timetrack_user';
 const USERS_KEY = 'timetrack_users';
 const BACKEND_BASE_URL = (typeof import.meta !== 'undefined' && import.meta.env?.VITE_BACKEND_URL || 'http://localhost:8765').replace(/\/$/, '');
+const CLOUDINARY_CLOUD_NAME = typeof import.meta !== 'undefined' ? String(import.meta.env?.VITE_CLOUDINARY_CLOUD_NAME || '').trim() : '';
+const CLOUDINARY_UPLOAD_PRESET = typeof import.meta !== 'undefined' ? String(import.meta.env?.VITE_CLOUDINARY_UPLOAD_PRESET || '').trim() : '';
+const CLOUDINARY_FOLDER = typeof import.meta !== 'undefined' ? String(import.meta.env?.VITE_CLOUDINARY_FOLDER || 'timesheet-images').trim() : 'timesheet-images';
 const ENTRIES_KEY = 'timetrack_entries';
 const SESSION_KEY = 'timetrack_session';
 const LOCATION_TAGS_KEY = 'timetrack_location_tags';
@@ -230,6 +233,30 @@ async function fileToDataUrl(file) {
     reader.onerror = () => reject(new Error('Unable to read file'));
     reader.readAsDataURL(file);
   });
+}
+
+async function uploadFileToCloudinary(file) {
+  if (!CLOUDINARY_CLOUD_NAME || !CLOUDINARY_UPLOAD_PRESET) {
+    return null;
+  }
+
+  const formData = new FormData();
+  formData.append('file', file);
+  formData.append('upload_preset', CLOUDINARY_UPLOAD_PRESET);
+  if (CLOUDINARY_FOLDER) formData.append('folder', CLOUDINARY_FOLDER);
+
+  const response = await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/image/upload`, {
+    method: 'POST',
+    body: formData,
+  });
+
+  if (!response.ok) {
+    const body = await response.text().catch(() => '');
+    throw new Error(body || `Cloudinary upload failed with status ${response.status}`);
+  }
+
+  const json = await response.json();
+  return String(json?.secure_url || json?.url || '').trim() || null;
 }
 
 export const localClient = {
@@ -583,6 +610,14 @@ export const localClient = {
   integrations: {
     Core: {
       async UploadFile({ file }) {
+        try {
+          const cloudUrl = await uploadFileToCloudinary(file);
+          if (cloudUrl) return { file_url: cloudUrl };
+        } catch (error) {
+          console.warn('Cloud upload failed, falling back to data URL:', error?.message || error);
+        }
+
+        // Local fallback keeps existing behavior working when cloud env vars are not configured.
         const file_url = await fileToDataUrl(file);
         return { file_url };
       },

@@ -2,34 +2,20 @@ from __future__ import annotations
 
 from datetime import datetime
 from calendar import monthrange
-import base64
-from io import BytesIO
 import json
 import os
 from pathlib import Path
 import re
 from shutil import copyfile
 from typing import Any
-from urllib import request as urllib_request
-from urllib import error as urllib_error
 
 from flask import Flask, jsonify, request, send_file
 from openpyxl import load_workbook
-from PIL import Image, ImageEnhance, ImageFile, ImageOps
-import pytesseract
 
 try:
     import psycopg
 except Exception:  # pragma: no cover - optional dependency in local-only runs
     psycopg = None
-
-try:
-    from paddleocr import PaddleOCR
-except Exception:  # pragma: no cover - optional dependency
-    PaddleOCR = None
-
-
-ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 ROOT = Path(__file__).resolve().parent
 UPLOADS_DIR = ROOT / 'uploads'
@@ -93,31 +79,6 @@ HEADER_ALIASES = {
     'comment': 'Comment',
 }
 
-TIMESTAMP_RE = re.compile(
-    r'(?P<month>Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\s+'
-    r'(?P<day>\d{1,2})[,\s]+'
-    r'(?P<year>\d{4})\s+'
-    r'(?P<time>\d{1,2}:\d{2}(?::\d{2})?\s*[AP]M)',
-    re.IGNORECASE,
-)
-FULL_MONTH_TIMESTAMP_RE = re.compile(
-    r'(?P<month>January|February|March|April|May|June|July|August|September|October|November|December)\s+'
-    r'(?P<day>\d{1,2})[,\s]+'
-    r'(?P<year>\d{4})\s+'
-    r'(?P<time>\d{1,2}:\d{2}(?::\d{2})?\s*[AP]M)',
-    re.IGNORECASE,
-)
-ISO_TIMESTAMP_RE = re.compile(
-    r'(?P<value>\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)',
-    re.IGNORECASE,
-)
-SLASH_TIMESTAMP_RE = re.compile(
-    r'(?P<month>\d{1,2})/(?P<day>\d{1,2})/(?P<year>\d{4})\s+'
-    r'(?P<time>\d{1,2}:\d{2}(?::\d{2})?\s*(?:[AP]M)?)',
-    re.IGNORECASE,
-)
-COUNTY_RE = re.compile(r'([A-Za-z]+(?:\s+[A-Za-z]+)?)\s+County', re.IGNORECASE)
-
 app = Flask(__name__)
 
 
@@ -140,53 +101,7 @@ load_local_env(ROOT / '.env.local')
 DATABASE_URL = os.getenv('DATABASE_URL') or os.getenv('POSTGRES_URL') or os.getenv('POSTGRES_PRISMA_URL')
 DB_ENABLED = bool(DATABASE_URL and psycopg)
 DB_BOOTSTRAPPED = False
-GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', '').strip()
-GEMINI_MODEL = os.getenv('GEMINI_MODEL', 'gemini-2.5-flash').strip()
-GEMINI_FALLBACK_MODELS = ['gemini-2.5-flash', 'gemini-flash-latest']
-
-
-def parse_csv_env(name: str) -> list[str]:
-    raw = os.getenv(name, '')
-    if not raw:
-        return []
-    return [item.strip() for item in raw.split(',') if item.strip()]
-
-
-def dedupe_keep_order(values: list[str]) -> list[str]:
-    seen: set[str] = set()
-    output: list[str] = []
-    for value in values:
-        if value in seen:
-            continue
-        seen.add(value)
-        output.append(value)
-    return output
-
-
-_manual_models = parse_csv_env('GEMINI_MODELS')
-GEMINI_MODEL_CANDIDATES = dedupe_keep_order(
-    _manual_models if _manual_models else [GEMINI_MODEL] + [m for m in GEMINI_FALLBACK_MODELS if m != GEMINI_MODEL]
-)
-
-PADDLE_OCR_INSTANCE = None
-MAX_ANALYZE_FILE_BYTES = int(os.getenv('MAX_ANALYZE_FILE_BYTES', str(12 * 1024 * 1024)))
-MAX_OCR_INPUT_SIDE = int(os.getenv('MAX_OCR_INPUT_SIDE', '2200'))
-MAX_GEMINI_INPUT_SIDE = int(os.getenv('MAX_GEMINI_INPUT_SIDE', '1800'))
-MAX_TESSERACT_RETRY_SIDE = int(os.getenv('MAX_TESSERACT_RETRY_SIDE', '1200'))
-TESSERACT_TIMEOUT_SECONDS = float(os.getenv('TESSERACT_TIMEOUT_SECONDS', '6'))
 PAYROLL_SECOND_PERIOD_START_DAY = int(os.getenv('PAYROLL_SECOND_PERIOD_START_DAY', '16'))
-
-
-def env_flag(name: str, default: bool) -> bool:
-    raw = os.getenv(name)
-    if raw is None:
-        return default
-    return str(raw).strip().lower() in {'1', 'true', 'yes', 'on'}
-
-
-ENABLE_PADDLE_FALLBACK = env_flag('ENABLE_PADDLE_FALLBACK', True)
-ENABLE_TESSERACT_FALLBACK = env_flag('ENABLE_TESSERACT_FALLBACK', True)
-ENABLE_TESSERACT_FULL_RETRY = env_flag('ENABLE_TESSERACT_FULL_RETRY', False)
 
 
 def get_payroll_second_period_start_day(raw_day: Any = None) -> int:
@@ -262,310 +177,6 @@ def get_template_path(shift_dt: datetime | None = None) -> Path:
     raise FileNotFoundError('No timesheet template was found in the workspace root.')
 
 
-def crop_bottom_right_half(image: Image.Image) -> Image.Image:
-    width, height = image.size
-    return image.crop((width // 2, height // 2, width, height))
-
-
-def preprocess_for_ocr(image: Image.Image) -> Image.Image:
-    gray = ImageOps.grayscale(image)
-    gray = ImageOps.autocontrast(gray)
-    gray = ImageEnhance.Sharpness(gray).enhance(2.5)
-    upscaled = gray.resize((gray.width * 2, gray.height * 2))
-    return scale_image_for_ocr(upscaled, max_side=MAX_OCR_INPUT_SIDE)
-
-
-def scale_image_for_ocr(image: Image.Image, max_side: int) -> Image.Image:
-    if max_side <= 0:
-        return image
-    width, height = image.size
-    largest = max(width, height)
-    if largest <= max_side:
-        return image
-    ratio = max_side / float(largest)
-    new_size = (max(1, int(width * ratio)), max(1, int(height * ratio)))
-    resample = getattr(getattr(Image, 'Resampling', Image), 'LANCZOS')
-    return image.resize(new_size, resample)
-
-
-def image_to_png_bytes(image: Image.Image) -> bytes:
-    buffer = BytesIO()
-    image.save(buffer, format='PNG')
-    return buffer.getvalue()
-
-
-def run_gemini_ocr(image: Image.Image) -> str:
-    if not GEMINI_API_KEY:
-        return ''
-
-    image_b64 = base64.b64encode(image_to_png_bytes(image)).decode('utf-8')
-    payload = {
-        'contents': [
-            {
-                'parts': [
-                    {
-                        'text': (
-                            'You are reading a work-photo screenshot for timesheet OCR. '
-                            'Highest priority: find and transcribe the timestamp overlay exactly as shown in the image, '
-                            'including month, day, year, time, and AM/PM. '
-                            'Second priority: transcribe nearby county, city, or location words that belong to the same overlay. '
-                            'Ignore unrelated company boards, street addresses, building signs, slogans, and background text unless no overlay text is readable. '
-                            'If a timestamp is visible, put that timestamp text first in the response. '
-                            'Return plain text only, with no explanation.'
-                        )
-                    },
-                    {
-                        'inline_data': {
-                            'mime_type': 'image/png',
-                            'data': image_b64,
-                        }
-                    },
-                ]
-            }
-        ]
-    }
-
-    last_error = 'none'
-    for model_name in GEMINI_MODEL_CANDIDATES:
-        try:
-            url = f'https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={GEMINI_API_KEY}'
-            req = urllib_request.Request(
-                url,
-                data=json.dumps(payload).encode('utf-8'),
-                headers={'Content-Type': 'application/json'},
-                method='POST',
-            )
-            with urllib_request.urlopen(req, timeout=8) as resp:
-                raw = resp.read().decode('utf-8', 'ignore')
-            parsed = json.loads(raw)
-            candidates = parsed.get('candidates') or []
-            texts: list[str] = []
-            for candidate in candidates:
-                content = candidate.get('content') or {}
-                for part in content.get('parts') or []:
-                    text = str(part.get('text') or '').strip()
-                    if text:
-                        texts.append(text)
-            joined = ' '.join(' '.join(texts).split())
-            if joined:
-                return joined
-            last_error = 'empty_response'
-        except urllib_error.HTTPError as exc:
-            body = ''
-            try:
-                body = exc.read().decode('utf-8', 'ignore')
-            except Exception:
-                body = ''
-            lowered = f'{exc} {body}'.lower()
-            if any(token in lowered for token in ('resource_exhausted', 'quota', 'rate limit', 'too many requests')):
-                app.logger.warning('Gemini OCR quota/rate-limit model=%s status=%s', model_name, exc.code)
-                last_error = 'quota_or_rate_limit'
-            else:
-                app.logger.warning('Gemini OCR HTTP error model=%s status=%s', model_name, exc.code)
-                last_error = f'http_{exc.code}'
-            continue
-        except (urllib_error.URLError, TimeoutError, ValueError, KeyError, json.JSONDecodeError):
-            last_error = 'network_or_parse_error'
-            continue
-        except Exception:
-            last_error = 'unknown_error'
-            continue
-
-    app.logger.warning('Gemini OCR unavailable models=%s reason=%s', ','.join(GEMINI_MODEL_CANDIDATES), last_error)
-    return ''
-
-
-def get_paddle_ocr() -> Any:
-    global PADDLE_OCR_INSTANCE
-    if PaddleOCR is None:
-        return None
-    if PADDLE_OCR_INSTANCE is None:
-        PADDLE_OCR_INSTANCE = PaddleOCR(use_angle_cls=True, lang='en', show_log=False)
-    return PADDLE_OCR_INSTANCE
-
-
-def run_paddle_ocr(image: Image.Image) -> str:
-    ocr = get_paddle_ocr()
-    if ocr is None:
-        return ''
-    try:
-        # PaddleOCR accepts ndarray; convert lazily to avoid mandatory numpy import unless used.
-        import numpy as np  # type: ignore
-
-        arr = np.array(image)
-        result = ocr.ocr(arr, cls=True)
-        lines: list[str] = []
-        for block in result or []:
-            for item in block or []:
-                if len(item) < 2:
-                    continue
-                text = str((item[1] or ['', 0])[0]).strip()
-                if text:
-                    lines.append(text)
-        return ' '.join(' '.join(lines).split())
-    except Exception:
-        return ''
-
-
-def run_fast_ocr(image: Image.Image) -> str:
-    safe_image = scale_image_for_ocr(image.convert('RGB').copy(), max_side=MAX_OCR_INPUT_SIDE)
-    try:
-        text = pytesseract.image_to_string(
-            safe_image,
-            config='--oem 1 --psm 6',
-            timeout=TESSERACT_TIMEOUT_SECONDS,
-        )
-        collapsed = ' '.join(text.split())
-        if TIMESTAMP_RE.search(collapsed):
-            return collapsed
-
-        fallback = pytesseract.image_to_string(
-            safe_image,
-            config='--oem 1 --psm 11',
-            timeout=TESSERACT_TIMEOUT_SECONDS,
-        )
-        return ' '.join(fallback.split())
-    except RuntimeError:
-        return ''
-    except Exception:
-        return ''
-
-
-def run_ocr_with_fallbacks(
-    image: Image.Image,
-    full_image: Image.Image | None = None,
-) -> tuple[str, str]:
-    """Try each OCR engine in priority order.  Prefer results that contain a
-    parseable timestamp; fall through to the next engine if the current one
-    returns text with no timestamp pattern.  Keeps the best non-empty result
-    as a fallback for county/tag extraction.
-    Gemini receives the full original image when available — neural models
-    benefit from colour and full context rather than the greyscale crop.
-    """
-    best: tuple[str, str] = ('', 'none')
-
-    # 1. Gemini — use full image for better context
-    gemini_input = full_image if full_image is not None else image
-    gemini_text = run_gemini_ocr(gemini_input)
-    if gemini_text:
-        if parse_timestamp(gemini_text):
-            return gemini_text, 'gemini'
-        if not best[0]:
-            best = (gemini_text, 'gemini')
-
-    # 2. PaddleOCR — works on the preprocessed crop
-    if ENABLE_PADDLE_FALLBACK:
-        paddle_text = run_paddle_ocr(image)
-        if paddle_text:
-            if parse_timestamp(paddle_text):
-                return paddle_text, 'paddle'
-            if not best[0]:
-                best = (paddle_text, 'paddle')
-
-    # 3. Tesseract — works on the preprocessed crop
-    if ENABLE_TESSERACT_FALLBACK:
-        tess_text = run_fast_ocr(image)
-        if parse_timestamp(tess_text):
-            return tess_text, 'tesseract'
-        if tess_text and not best[0]:
-            best = (tess_text, 'tesseract')
-
-    # Return best non-empty result for county/tag even if no timestamp found
-    return best
-
-
-def parse_timestamp_with_source(ocr_text: str) -> tuple[datetime | None, str]:
-    text = str(ocr_text or '').strip()
-    if not text:
-        return None, 'none'
-
-    match = TIMESTAMP_RE.search(ocr_text)
-    if match:
-        month = match.group('month').title()
-        if month == 'Sept':
-            month = 'Sep'
-        time_text = ' '.join(match.group('time').upper().split())
-        candidate = f"{month} {match.group('day')} {match.group('year')} {time_text}"
-        for fmt in ('%b %d %Y %I:%M:%S %p', '%b %d %Y %I:%M %p'):
-            try:
-                return datetime.strptime(candidate, fmt), 'abbr_month'
-            except ValueError:
-                continue
-
-    full_month = FULL_MONTH_TIMESTAMP_RE.search(text)
-    if full_month:
-        candidate = (
-            f"{full_month.group('month').title()} {full_month.group('day')} "
-            f"{full_month.group('year')} {' '.join(full_month.group('time').upper().split())}"
-        )
-        for fmt in ('%B %d %Y %I:%M:%S %p', '%B %d %Y %I:%M %p'):
-            try:
-                return datetime.strptime(candidate, fmt), 'full_month'
-            except ValueError:
-                continue
-
-    iso_match = ISO_TIMESTAMP_RE.search(text)
-    if iso_match:
-        iso_candidate = iso_match.group('value').replace('Z', '+00:00')
-        try:
-            parsed = datetime.fromisoformat(iso_candidate)
-            parsed_dt = parsed.replace(tzinfo=None) if parsed.tzinfo else parsed
-            return parsed_dt, 'iso'
-        except ValueError:
-            pass
-
-    slash_match = SLASH_TIMESTAMP_RE.search(text)
-    if slash_match:
-        candidate = (
-            f"{int(slash_match.group('month')):02d}/{int(slash_match.group('day')):02d}/"
-            f"{slash_match.group('year')} {' '.join(slash_match.group('time').upper().split())}"
-        )
-        for fmt in (
-            '%m/%d/%Y %I:%M:%S %p',
-            '%m/%d/%Y %I:%M %p',
-            '%m/%d/%Y %H:%M:%S',
-            '%m/%d/%Y %H:%M',
-        ):
-            try:
-                return datetime.strptime(candidate, fmt), 'slash'
-            except ValueError:
-                continue
-
-    # Final fallback: parse plain local datetime forms often produced by LLM OCR.
-    compact = text.replace('T', ' ')
-    for fmt in (
-        '%Y-%m-%d %H:%M:%S',
-        '%Y-%m-%d %H:%M',
-        '%Y-%m-%d %I:%M:%S %p',
-        '%Y-%m-%d %I:%M %p',
-    ):
-        try:
-            return datetime.strptime(compact, fmt), 'local_datetime'
-        except ValueError:
-            continue
-
-    return None, 'none'
-
-
-def parse_timestamp(ocr_text: str) -> datetime | None:
-    parsed, _ = parse_timestamp_with_source(ocr_text)
-    return parsed
-
-
-def parse_county(ocr_text: str) -> str | None:
-    match = COUNTY_RE.search(ocr_text)
-    if not match:
-        normalized_text = normalize_location_text(ocr_text)
-        for county_key in COUNTY_TAGS:
-            if county_key in normalized_text:
-                return county_key.title()
-        for city_name, county_key in CITY_TO_COUNTY.items():
-            if city_name in normalized_text:
-                return county_key.title()
-        return None
-    return canonicalize_county(match.group(1)).title()
-
-
 def normalize_location_text(value: str | None) -> str:
     text = re.sub(r'[^a-z\s]', ' ', str(value or '').lower())
     text = re.sub(r'\s+', ' ', text)
@@ -605,60 +216,6 @@ def sanitize_tag(value: str | None, valid_tags: set[str] | None = None) -> str |
     if valid_tags is not None:
         return upper if upper in valid_tags else None
     return upper
-
-
-def analyze_image_bytes(image_bytes: bytes, filename: str) -> dict[str, Any]:
-    with Image.open(BytesIO(image_bytes)) as image:
-        source_size = image.size
-        # Keep a full-resolution copy for Gemini (neural models need colour/context)
-        full_copy = scale_image_for_ocr(image.convert('RGB').copy(), max_side=MAX_GEMINI_INPUT_SIDE)
-        cropped = crop_bottom_right_half(image)
-        prepared = preprocess_for_ocr(cropped)
-        ocr_text, ocr_engine = run_ocr_with_fallbacks(prepared, full_image=full_copy)
-
-    timestamp, timestamp_source = parse_timestamp_with_source(ocr_text)
-
-    # Last-resort retry: full image through Tesseract when crop-based OCR missed
-    crop_strategy = 'bottom-right-half'
-    if timestamp is None and ocr_engine != 'gemini' and ENABLE_TESSERACT_FALLBACK and ENABLE_TESSERACT_FULL_RETRY:
-        full_reduced = scale_image_for_ocr(full_copy, max_side=MAX_TESSERACT_RETRY_SIDE)
-        full_prepared = preprocess_for_ocr(full_reduced)
-        retry_text = run_fast_ocr(full_prepared)
-        retry_ts, retry_source = parse_timestamp_with_source(retry_text)
-        if retry_ts:
-            ocr_text, ocr_engine, timestamp = retry_text, 'tesseract-full', retry_ts
-            timestamp_source = f'tesseract-retry:{retry_source}'
-            crop_strategy = 'full-image-retry'
-
-    county = parse_county(ocr_text)
-    location_tag = determine_location_tag(county)
-    data_center_location = TAG_TO_DATA_CENTER.get(location_tag, '')
-    preview = ' '.join(str(ocr_text or '').split())[:180]
-    app.logger.info(
-        'OCR analyze filename=%s engine=%s timestamp_found=%s timestamp_source=%s crop=%s location_tag=%s preview=%s',
-        filename,
-        ocr_engine,
-        bool(timestamp),
-        timestamp_source,
-        crop_strategy,
-        location_tag or '-',
-        preview,
-    )
-    return {
-        'filename': filename,
-        'ocr_text': ocr_text,
-        'ocr_engine': ocr_engine,
-        'timestamp': timestamp.isoformat() if timestamp else None,
-        'date': timestamp.date().isoformat() if timestamp else None,
-        'time': timestamp.strftime('%I:%M:%S %p') if timestamp else None,
-        'county': county,
-        'location_tag': location_tag,
-        'data_center_location': data_center_location,
-        'crop': {
-            'source_size': list(source_size),
-            'strategy': crop_strategy,
-        },
-    }
 
 
 def get_header_map(worksheet: Any) -> dict[str, int]:
@@ -1336,42 +893,6 @@ def list_users() -> Any:
         return jsonify({'users': [], 'error': str(exc)}), 200
 
 
-@app.route('/analyze', methods=['POST'])
-def analyze() -> Any:
-    files = request.files.getlist('files')
-    if not files:
-        return jsonify({'error': 'Upload one or more files using the files field.'}), 400
-
-    results = []
-    for uploaded in files:
-        image_bytes = uploaded.read(MAX_ANALYZE_FILE_BYTES + 1)
-        if not image_bytes:
-            continue
-        if len(image_bytes) > MAX_ANALYZE_FILE_BYTES:
-            results.append(
-                {
-                    'filename': uploaded.filename or 'upload',
-                    'error': f'File too large for OCR (max {MAX_ANALYZE_FILE_BYTES} bytes).',
-                    'timestamp': None,
-                    'location_tag': '',
-                }
-            )
-            continue
-        try:
-            results.append(analyze_image_bytes(image_bytes, uploaded.filename or 'upload'))
-        except Exception as exc:
-            results.append(
-                {
-                    'filename': uploaded.filename or 'upload',
-                    'error': f'Analyze failed: {str(exc)}',
-                    'timestamp': None,
-                    'location_tag': '',
-                }
-            )
-
-    return jsonify({'count': len(results), 'results': results})
-
-
 @app.route('/timesheet_entries', methods=['GET'])
 def list_timesheet_entries() -> Any:
     if not DB_ENABLED:
@@ -1484,36 +1005,6 @@ def list_timesheet_entries() -> Any:
         return jsonify({'entries': entries}), 200
     except Exception as exc:
         return jsonify({'entries': [], 'error': str(exc)}), 200
-
-
-@app.route('/submit_shift', methods=['POST'])
-def submit_shift() -> Any:
-    clock_in = request.files.get('clock_in')
-    clock_out = request.files.get('clock_out')
-    if not clock_in and not clock_out:
-        return jsonify({'error': 'Provide at least one of clock_in or clock_out.'}), 400
-
-    clock_in_result = None
-    clock_out_result = None
-
-    if clock_in:
-        clock_in_result = analyze_image_bytes(clock_in.read(), clock_in.filename or 'clock_in')
-    if clock_out:
-        clock_out_result = analyze_image_bytes(clock_out.read(), clock_out.filename or 'clock_out')
-
-    profile = extract_profile(request.form)
-    workbook_path = write_shift_to_workbook(clock_in_result, clock_out_result, profile)
-    db_result = persist_shift_to_database(clock_in_result, clock_out_result, profile, extract_submission_actor(request.form))
-
-    response = {
-        'ok': True,
-        'clock_in': clock_in_result,
-        'clock_out': clock_out_result,
-        'workbook_path': str(workbook_path),
-        'download_url': '/download/latest-timesheet',
-        'db': db_result,
-    }
-    return jsonify(response)
 
 
 @app.route('/submit_shift_meta', methods=['POST'])
