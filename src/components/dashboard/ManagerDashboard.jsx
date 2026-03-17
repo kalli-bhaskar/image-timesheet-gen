@@ -1,7 +1,7 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { localClient } from '@/api/localClient';
-import { getWeekRange, safeHoursDecimal } from '../timeUtils';
+import { getPayrollPeriod, safeHoursDecimal } from '../timeUtils';
 import EmployeeCard from '../EmployeeCard';
 import PayrollPeriodBadge from '../PayrollPeriodBadge';
 import { Users, TrendingUp } from 'lucide-react';
@@ -12,6 +12,8 @@ function normalizeCompany(value) {
 
 export default function ManagerDashboard({ user }) {
   const firstName = (user.display_name || user.full_name || '').split(' ')[0] || 'there';
+
+  const [selectedPeriod, setSelectedPeriod] = useState(() => getPayrollPeriod(new Date().toISOString()));
 
   const { data: allUsers = [] } = useQuery({
     queryKey: ['managed-users'],
@@ -29,14 +31,16 @@ export default function ManagerDashboard({ user }) {
     return normalizeCompany(emp.customer || emp.company_name) === managerCompany;
   });
 
-  const { start, end } = getWeekRange();
+  const [pStart, pEnd] = selectedPeriod.split(' to ');
+  const periodStart = new Date(pStart + 'T00:00:00');
+  const periodEnd = new Date(pEnd + 'T23:59:59');
 
   const employeeStats = managedUsers.map((emp) => {
     const weekEntries = entries.filter(
       (e) =>
         e.employee_email === emp.email &&
-        new Date(e.date) >= start &&
-        new Date(e.date) <= end
+        new Date(e.date) >= periodStart &&
+        new Date(e.date) <= periodEnd
     );
     const totalHours = weekEntries.reduce((sum, e) => sum + safeHoursDecimal(e), 0);
     const estimatedPay = totalHours * (emp.hourly_rate || 0);
@@ -54,7 +58,7 @@ export default function ManagerDashboard({ user }) {
         </p>
       </div>
 
-      <PayrollPeriodBadge />
+      <PayrollPeriodBadge value={selectedPeriod} onChange={setSelectedPeriod} />
 
       <div className="grid grid-cols-2 gap-3">
         <div className="bg-slate-900 rounded-2xl p-4 text-white">
@@ -65,7 +69,7 @@ export default function ManagerDashboard({ user }) {
         <div className="bg-slate-900 rounded-2xl p-4 text-white">
           <TrendingUp className="w-5 h-5 text-green-400 mb-2" />
           <p className="text-2xl font-bold">{totalTeamHours.toFixed(1)}h</p>
-          <p className="text-slate-400 text-xs">Team Hours (Week)</p>
+          <p className="text-slate-400 text-xs">Team Hours (Period)</p>
         </div>
       </div>
 
