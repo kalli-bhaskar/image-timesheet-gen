@@ -6,6 +6,10 @@ import EmployeeCard from '../EmployeeCard';
 import PayrollPeriodBadge from '../PayrollPeriodBadge';
 import { Users, TrendingUp } from 'lucide-react';
 
+function normalizeCompany(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
 export default function ManagerDashboard({ user }) {
   const firstName = (user.display_name || user.full_name || '').split(' ')[0] || 'there';
 
@@ -19,9 +23,15 @@ export default function ManagerDashboard({ user }) {
     queryFn: () => localClient.entities.TimesheetEntry.filter({ status: 'completed' }),
   });
 
+  const managerCompany = normalizeCompany(user.customer || user.company_name);
+  const managedUsers = allUsers.filter((emp) => {
+    if (!managerCompany) return true;
+    return normalizeCompany(emp.customer || emp.company_name) === managerCompany;
+  });
+
   const { start, end } = getWeekRange();
 
-  const employeeStats = allUsers.map((emp) => {
+  const employeeStats = managedUsers.map((emp) => {
     const weekEntries = entries.filter(
       (e) =>
         e.employee_email === emp.email &&
@@ -49,7 +59,7 @@ export default function ManagerDashboard({ user }) {
       <div className="grid grid-cols-2 gap-3">
         <div className="bg-slate-900 rounded-2xl p-4 text-white">
           <Users className="w-5 h-5 text-blue-400 mb-2" />
-          <p className="text-2xl font-bold">{allUsers.length}</p>
+          <p className="text-2xl font-bold">{managedUsers.length}</p>
           <p className="text-slate-400 text-xs">Employees</p>
         </div>
         <div className="bg-slate-900 rounded-2xl p-4 text-white">

@@ -18,6 +18,10 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 
+function normalizeCompany(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
 export default function Timesheets() {
   const { user } = useAuth();
   const [search, setSearch] = useState('');
@@ -38,7 +42,13 @@ export default function Timesheets() {
     queryFn: () => localClient.entities.User.filter({ manager_email: user.email }),
   });
 
-  const managedEmails = employees.map((e) => e.email);
+  const managerCompany = normalizeCompany(user.customer || user.company_name);
+  const managedEmployees = employees.filter((employee) => {
+    if (!managerCompany) return true;
+    return normalizeCompany(employee.customer || employee.company_name) === managerCompany;
+  });
+
+  const managedEmails = managedEmployees.map((e) => e.email);
   const managedEntries = entries.filter((e) => managedEmails.includes(e.employee_email));
 
   // Get unique payroll periods

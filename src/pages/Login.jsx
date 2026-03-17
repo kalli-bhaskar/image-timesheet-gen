@@ -103,13 +103,13 @@ export default function Login() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-900 flex flex-col items-center justify-center p-6">
+    <div className="min-h-screen bg-blue-900 flex flex-col items-center justify-center p-6">
       <div className="w-full max-w-sm">
         <div className="text-center mb-8">
           <div className="w-16 h-16 rounded-2xl bg-blue-600 flex items-center justify-center mx-auto mb-4">
             <Clock className="w-8 h-8 text-white" />
           </div>
-          <h1 className="text-2xl font-bold text-white">TimeTrack Login</h1>
+          <h1 className="text-2xl font-bold text-white">Shift Track Pro <span className="text-orange-400">&gt;</span></h1>
           <p className="text-slate-400 mt-1 text-sm">Sign in to continue</p>
         </div>
 

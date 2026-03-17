@@ -149,6 +149,11 @@ export default function Employees() {
 
   const managerCustomerLabel = user.customer || user.company_name || '';
   const normalizedManagerCustomer = normalizeSearchValue(managerCustomerLabel);
+  const managedEmployees = employees.filter((employee) => {
+    if (!normalizedManagerCustomer) return true;
+    return normalizeSearchValue(employee.customer || employee.company_name) === normalizedManagerCustomer;
+  });
+  const filteredManagedEmployees = managedEmployees.filter((employee) => matchesEmployeeSearch(employee, search));
 
   const companyCandidates = allEmployees
     .filter((employee) => employee.user_role === 'employee')
@@ -287,7 +292,7 @@ export default function Employees() {
       </div>
 
       <div className="space-y-2">
-        {filtered.length === 0 ? (
+        {filteredManagedEmployees.length === 0 ? (
           <div className="bg-white rounded-2xl p-8 text-center border border-slate-100">
             <User className="w-8 h-8 text-slate-300 mx-auto mb-2" />
             <p className="text-slate-500 text-sm">
@@ -295,7 +300,7 @@ export default function Employees() {
             </p>
           </div>
         ) : (
-          filtered.map((emp) => (
+          filteredManagedEmployees.map((emp) => (
             <div
               key={emp.id}
               className="bg-white rounded-xl p-4 border border-slate-100 flex items-center justify-between"

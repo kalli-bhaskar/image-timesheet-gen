@@ -70,6 +70,8 @@ export default function Settings() {
         full_name: form.full_name.trim() || user.full_name || 'Employee',
         display_name: form.full_name.trim() || user.display_name || user.full_name || 'Employee',
       };
+      const startDay = Number(form.payroll_second_period_start_day || 16);
+      payload.payroll_second_period_start_day = Math.min(28, Math.max(2, Math.floor(startDay || 16)));
 
       if (isManager) {
         payload.company_name = form.company_name.trim();
@@ -85,8 +87,6 @@ export default function Settings() {
         payload.stn_accommodation = form.stn_accommodation.trim() || 'N/A';
         payload.stn_rental = form.stn_rental.trim() || 'N/A';
         payload.stn_gas = form.stn_gas.trim() || 'N/A';
-        const startDay = Number(form.payroll_second_period_start_day || 16);
-        payload.payroll_second_period_start_day = Math.min(28, Math.max(2, Math.floor(startDay || 16)));
       }
 
       await localClient.auth.updateMe(payload);
@@ -162,6 +162,20 @@ export default function Settings() {
                   placeholder="Acme Corp"
                   className={inputClass}
                 />
+              </Field>
+              <Field label="Payroll 2nd Period Start Day">
+                <Input
+                  type="number"
+                  min={2}
+                  max={28}
+                  value={form.payroll_second_period_start_day}
+                  onChange={(e) => setField('payroll_second_period_start_day', e.target.value)}
+                  placeholder="16"
+                  className={inputClass}
+                />
+                <p className="mt-1 text-xs text-slate-500">
+                  Example: set to 15 for 1-14 and 15-end of month. Set to 16 for 1-15 and 16-end.
+                </p>
               </Field>
               <div className="flex items-center justify-between py-2">
                 <div>

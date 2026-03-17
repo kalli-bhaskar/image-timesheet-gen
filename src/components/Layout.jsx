@@ -27,18 +27,20 @@ export default function Layout() {
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col">
-      <header className="bg-slate-900 text-white px-4 py-3 flex items-center justify-between sticky top-0 z-50">
+      <header className="bg-blue-900 text-white px-4 py-3 flex items-center justify-between sticky top-0 z-50">
         <div className="flex items-center gap-2">
           <div className="w-8 h-8 rounded-lg bg-blue-500 flex items-center justify-center">
             <Clock className="w-4 h-4 text-white" />
           </div>
-          <span className="font-semibold text-sm tracking-wide">TimeTrack</span>
+          <span className="font-semibold text-sm tracking-wide text-blue-50">
+            Shift Track Pro <span className="text-orange-400">&gt;</span>
+          </span>
         </div>
         <button
           onClick={() => logout(false)}
-          className="p-2 rounded-lg hover:bg-slate-800 transition-colors"
+          className="p-2 rounded-lg hover:bg-blue-800 transition-colors"
         >
-          <LogOut className="w-4 h-4 text-slate-400" />
+          <LogOut className="w-4 h-4 text-blue-200" />
         </button>
       </header>
 
