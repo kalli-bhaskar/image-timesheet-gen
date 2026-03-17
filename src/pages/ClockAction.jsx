@@ -99,12 +99,12 @@ function toMetaFallback({ timestamp, locationTag, photoUrl }) {
     filename: photoUrl || 'image',
     crop: { strategy: 'frontend-fallback' },
   };
+}
 
 function withRemoteUrl(meta, photoUrl) {
   if (!meta) return meta;
   const url = typeof photoUrl === 'string' && photoUrl.startsWith('https://') ? photoUrl : null;
   return url ? { ...meta, file_url: url } : meta;
-}
 }
 
 function getDurationMinutes(startIso, endIso) {
@@ -263,7 +263,39 @@ export default function ClockAction() {
   const [success, setSuccess] = useState(null);
   const [locationMismatch, setLocationMismatch] = useState(null);
   const [timestampReview, setTimestampReview] = useState(null); // { action: 'in'|'out', detectedIso: string }
+  const [backendSync, setBackendSync] = useState({ status: 'idle', message: '' });
+  const [pendingRetryPayload, setPendingRetryPayload] = useState(null);
   const timestampReviewResolver = useRef(null);
+
+  const runBackendSync = async ({ clockInMeta, clockOutMeta, profile, actor, contextLabel = 'sync' }) => {
+    setBackendSync({ status: 'syncing', message: `Syncing backend (${contextLabel})...` });
+    try {
+      const response = await submitShiftMetaToBackend({ clockInMeta, clockOutMeta, profile, actor });
+      const saved = Boolean(response?.db?.saved);
+      if (!saved) {
+        const reason = response?.db?.error || response?.db?.reason || 'unknown_backend_response';
+        throw new Error(`Backend did not persist (${reason})`);
+      }
+      setPendingRetryPayload(null);
+      setBackendSync({ status: 'ok', message: 'Synced to backend and DB.' });
+      return response;
+    } catch (error) {
+      setPendingRetryPayload({ clockInMeta, clockOutMeta, profile, actor });
+      setBackendSync({ status: 'error', message: error?.message || 'Backend sync failed.' });
+      throw error;
+    }
+  };
+
+  const retryBackendSync = async () => {
+    if (!pendingRetryPayload) return;
+    try {
+      await runBackendSync({ ...pendingRetryPayload, contextLabel: 'manual retry' });
+      toast.success('Backend sync retry succeeded.');
+    } catch (error) {
+      console.error('retry submit_shift_meta failed', error);
+      toast.error('Retry failed. Please try again in a moment.');
+    }
+  };
 
   const requestTimestampReview = ({ action, detectedIso }) => new Promise((resolve) => {
     timestampReviewResolver.current = resolve;
@@ -405,11 +437,12 @@ export default function ClockAction() {
         };
 
         try {
-          await submitShiftMetaToBackend({
+          await runBackendSync({
             clockInMeta: withRemoteUrl(clockInMeta, activeEntry.clock_in_photo_url),
             clockOutMeta: withRemoteUrl(clockOutMeta, photoUrl),
             profile,
             actor,
+            contextLabel: 'clock-out',
           });
         } catch (error) {
           console.error('submit_shift_meta failed', error);
@@ -554,7 +587,12 @@ export default function ClockAction() {
             work_location_tag: user.work_location_tag || imageMeta?.location_tag || '',
           };
           try {
-            await submitShiftMetaToBackend({ clockInMeta: withRemoteUrl(imageMeta, data.photoUrl), profile, actor });
+            await runBackendSync({
+              clockInMeta: withRemoteUrl(imageMeta, data.photoUrl),
+              profile,
+              actor,
+              contextLabel: 'clock-in',
+            });
           } catch (error) {
             console.error('submit_shift_meta clock-in failed', error);
             toast.warning('Clocked in locally. Backend sync failed, so this entry may not appear on other devices yet.');
@@ -618,7 +656,12 @@ export default function ClockAction() {
           customer: user.customer || user.company_name || '',
           work_location_tag: user.work_location_tag || optimisticMeta?.location_tag || '',
         };
-        void submitShiftMetaToBackend({ clockInMeta: withRemoteUrl(optimisticMeta, data.photoUrl), profile, actor }).catch((error) => {
+        void runBackendSync({
+          clockInMeta: withRemoteUrl(optimisticMeta, data.photoUrl),
+          profile,
+          actor,
+          contextLabel: 'clock-in-background',
+        }).catch((error) => {
           console.error('submit_shift_meta clock-in failed', error);
           toast.warning('Clocked in locally. Backend sync failed, so this entry may not appear on other devices yet.');
         });
@@ -721,11 +764,12 @@ export default function ClockAction() {
           };
 
           try {
-            await submitShiftMetaToBackend({
+            await runBackendSync({
               clockInMeta: withRemoteUrl(clockInMeta, activeEntry.clock_in_photo_url),
               clockOutMeta: withRemoteUrl(clockOutMeta, data.photoUrl),
               profile,
               actor,
+              contextLabel: 'clock-out-background',
             });
           } catch (error) {
             console.error('submit_shift_meta (background) failed', error);
@@ -822,6 +866,26 @@ export default function ClockAction() {
           <p className={`font-medium text-sm ${success === 'in' ? 'text-green-800' : 'text-blue-800'}`}>
             {success === 'in' ? 'Successfully clocked in!' : 'Successfully clocked out!'}
           </p>
+        </div>
+      )}
+
+      {backendSync.status !== 'idle' && (
+        <div className={`rounded-2xl p-3 border flex items-center justify-between gap-3 ${
+          backendSync.status === 'ok'
+            ? 'bg-emerald-50 border-emerald-200'
+            : backendSync.status === 'error'
+              ? 'bg-amber-50 border-amber-200'
+              : 'bg-slate-50 border-slate-200'
+        }`}>
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Backend Sync</p>
+            <p className="text-sm text-slate-800">{backendSync.message}</p>
+          </div>
+          {backendSync.status === 'error' && (
+            <Button size="sm" variant="outline" className="border-amber-300" onClick={retryBackendSync}>
+              Retry
+            </Button>
+          )}
         </div>
       )}
 
