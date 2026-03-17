@@ -11,7 +11,7 @@ function clampSecondPeriodDay(rawValue) {
   return rounded;
 }
 
-function getSecondPeriodStartDay() {
+export function getSecondPeriodStartDay() {
   try {
     const stored = localStorage.getItem(USER_KEY);
     if (stored) {

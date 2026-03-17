@@ -10,13 +10,6 @@ import { Clock, MapPin, Camera, Download } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
-import {
   Dialog,
   DialogContent,
   DialogHeader,
@@ -26,9 +19,7 @@ import {
 export default function MyTimesheets() {
   const { user } = useAuth();
   const [photoPreview, setPhotoPreview] = useState(null);
-  const [fromDate, setFromDate] = useState('');
-  const [toDate, setToDate] = useState('');
-  const [periodFilter, setPeriodFilter] = useState('all');
+  const [periodFilter, setPeriodFilter] = useState(() => getPayrollPeriod(new Date().toISOString()));
 
   if (!user?.setup_complete) return <Navigate to="/Setup" replace />;
 
@@ -38,20 +29,8 @@ export default function MyTimesheets() {
   });
 
   const completedEntries = entries.filter((e) => e.status === 'completed');
-  const periods = [...new Set(completedEntries.map((e) => e.payroll_period).filter(Boolean))].sort().reverse();
 
-  const inSelectedRange = (entry) => {
-    const date = String(entry.date || '').slice(0, 10);
-    if (!date) return false;
-    if (fromDate && date < fromDate) return false;
-    if (toDate && date > toDate) return false;
-    return true;
-  };
-
-  const rangeEntries = completedEntries.filter(inSelectedRange).filter((entry) => {
-    if (periodFilter === 'all') return true;
-    return entry.payroll_period === periodFilter;
-  });
+  const rangeEntries = completedEntries.filter((entry) => entry.payroll_period === periodFilter);
 
   // Group by payroll period
   const grouped = rangeEntries.reduce((acc, entry) => {
@@ -99,7 +78,7 @@ export default function MyTimesheets() {
         </Button>
       </div>
 
-      <PayrollPeriodBadge />
+      <PayrollPeriodBadge value={periodFilter} onChange={setPeriodFilter} />
 
       <div className="bg-white rounded-2xl p-3 border border-slate-100 grid grid-cols-2 gap-3">
         <div>
@@ -112,33 +91,6 @@ export default function MyTimesheets() {
         </div>
       </div>
 
-      <div className="bg-white rounded-2xl p-3 border border-slate-100 grid grid-cols-2 gap-2">
-        <div>
-          <label className="text-xs text-slate-500">From</label>
-          <input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} className="mt-1 w-full rounded-lg border border-slate-200 px-2 py-1.5 text-sm" />
-        </div>
-        <div>
-          <label className="text-xs text-slate-500">To</label>
-          <input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} className="mt-1 w-full rounded-lg border border-slate-200 px-2 py-1.5 text-sm" />
-        </div>
-      </div>
-
-      <div className="bg-white rounded-2xl p-3 border border-slate-100">
-        <label className="text-xs text-slate-500">Payroll Period</label>
-        <Select value={periodFilter} onValueChange={setPeriodFilter}>
-          <SelectTrigger className="mt-1">
-            <SelectValue placeholder="All Periods" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All Periods</SelectItem>
-            {periods.map((p) => (
-              <SelectItem key={p} value={p}>
-                {p === currentPeriod ? `Current (${p})` : p}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </div>
 
       {isLoading ? (
         <div className="flex justify-center py-12">

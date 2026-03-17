@@ -9,14 +9,7 @@ import PayrollPeriodBadge from '../components/PayrollPeriodBadge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
-import { Download, Search, FileSpreadsheet, User, Clock, Filter } from 'lucide-react';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
+import { Download, Search, FileSpreadsheet, User, Clock } from 'lucide-react';
 
 function normalizeCompany(value) {
   return String(value || '').trim().toLowerCase();
@@ -25,7 +18,7 @@ function normalizeCompany(value) {
 export default function Timesheets() {
   const { user } = useAuth();
   const [search, setSearch] = useState('');
-  const [periodFilter, setPeriodFilter] = useState('all');
+  const [periodFilter, setPeriodFilter] = useState(() => getPayrollPeriod(new Date().toISOString()));
   const [fromDate, setFromDate] = useState('');
   const [toDate, setToDate] = useState('');
 
@@ -51,8 +44,6 @@ export default function Timesheets() {
   const managedEmails = managedEmployees.map((e) => e.email);
   const managedEntries = entries.filter((e) => managedEmails.includes(e.employee_email));
 
-  // Get unique payroll periods
-  const periods = [...new Set(managedEntries.map((e) => e.payroll_period).filter(Boolean))].sort().reverse();
   const currentPeriod = getPayrollPeriod(new Date().toISOString());
   const now = new Date();
   const monthStart = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
@@ -67,20 +58,18 @@ export default function Timesheets() {
 
   const filtered = managedEntries.filter((e) => {
     const nameMatch = (e.employee_name || '').toLowerCase().includes(search.toLowerCase());
-    const periodMatch = periodFilter === 'all' || e.payroll_period === periodFilter;
+    const periodMatch = e.payroll_period === periodFilter;
     const date = String(e.date || '').slice(0, 10);
     const dateMatch = (!fromDate || date >= fromDate) && (!toDate || date <= toDate);
     return nameMatch && periodMatch && dateMatch;
   });
 
   const handleExport = () => {
-    const toExport = periodFilter !== 'all' ? filtered : managedEntries;
-    const periodLabel = periodFilter !== 'all' ? periodFilter.replace(/ /g, '_') : 'all';
-    const sanitized = toExport.map((entry) => ({
+    const sanitized = filtered.map((entry) => ({
       ...entry,
       hours_decimal: safeHoursDecimal(entry),
     }));
-    downloadCSV(sanitized, `timesheet_${periodLabel}.csv`);
+    downloadCSV(sanitized, `timesheet_${periodFilter.replace(/ /g, '_')}.csv`);
   };
 
   return (
@@ -100,7 +89,7 @@ export default function Timesheets() {
         </Button>
       </div>
 
-      <PayrollPeriodBadge />
+      <PayrollPeriodBadge value={periodFilter} onChange={setPeriodFilter} />
 
       <div className="bg-white rounded-2xl p-3 border border-slate-100 grid grid-cols-2 gap-3">
         <div>
@@ -113,30 +102,14 @@ export default function Timesheets() {
         </div>
       </div>
 
-      <div className="flex gap-2">
-        <div className="relative flex-1">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
-          <Input
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search by name..."
-            className="pl-10"
-          />
-        </div>
-        <Select value={periodFilter} onValueChange={setPeriodFilter}>
-          <SelectTrigger className="w-36">
-            <Filter className="w-3 h-3 mr-1" />
-            <SelectValue placeholder="Period" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All Periods</SelectItem>
-            {periods.map((p) => (
-              <SelectItem key={p} value={p}>
-                {p === currentPeriod ? 'Current' : p.split(' to ')[0]}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+      <div className="relative">
+        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+        <Input
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search by name..."
+          className="pl-10"
+        />
       </div>
 
       <div className="bg-white rounded-2xl p-3 border border-slate-100 grid grid-cols-2 gap-2">
