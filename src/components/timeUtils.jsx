@@ -76,7 +76,18 @@ export function formatTime(isoString) {
 
 export function formatDateStr(dateStr) {
   if (!dateStr) return '';
-  return format(new Date(dateStr), 'MMM dd, yyyy');
+
+  const raw = String(dateStr).trim();
+  const dateOnlyMatch = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (dateOnlyMatch) {
+    const year = Number(dateOnlyMatch[1]);
+    const month = Number(dateOnlyMatch[2]);
+    const day = Number(dateOnlyMatch[3]);
+    // Parse YYYY-MM-DD as a local calendar date to avoid UTC timezone day shifts.
+    return format(new Date(year, month - 1, day), 'MMM dd, yyyy');
+  }
+
+  return format(new Date(raw), 'MMM dd, yyyy');
 }
 
 export function safeHoursDecimal(entry, maxHours = 16) {

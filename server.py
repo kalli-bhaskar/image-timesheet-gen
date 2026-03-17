@@ -365,6 +365,7 @@ def normalize_meta_result(meta: Any, label: str) -> dict[str, Any] | None:
         'location_tag': location_tag or '',
         'data_center_location': data_center_location,
         'crop': meta.get('crop') or {'strategy': 'metadata-only'},
+        'file_url': str(meta.get('file_url') or '').strip() or None,
     }
 
 
@@ -421,6 +422,14 @@ def persist_shift_to_database(
     employee_name = actor.get('employee_name') or profile.get('full_name') or employee_email.split('@')[0]
     work_location_tag = actor.get('work_location_tag') or None
     status = 'completed' if time_in_dt and time_out_dt else 'clocked_in'
+    payroll_start_day_raw = profile.get('payroll_second_period_start_day')
+    try:
+        payroll_start_day = int(payroll_start_day_raw) if payroll_start_day_raw is not None else 16
+    except (TypeError, ValueError):
+        payroll_start_day = 16
+    payroll_start_day = max(2, min(28, payroll_start_day))
+    clock_in_photo_url = str(clock_in_result.get('file_url') or '').strip() or None if clock_in_result else None
+    clock_out_photo_url = str(clock_out_result.get('file_url') or '').strip() or None if clock_out_result else None
 
     try:
         with get_db_connection() as conn:
@@ -495,7 +504,7 @@ def persist_shift_to_database(
                         profile.get('stn_rental'),
                         profile.get('stn_gas'),
                         work_location_tag,
-                        None,
+                        payroll_start_day,
                     ),
                 )
                 employee_row = cur.fetchone()
@@ -521,6 +530,8 @@ def persist_shift_to_database(
                           time_out = %s,
                           total_hours_text = %s,
                           hours_decimal = %s,
+                          clock_in_photo_url = coalesce(%s, clock_in_photo_url),
+                          clock_out_photo_url = coalesce(%s, clock_out_photo_url),
                           clock_in_meta = %s::jsonb,
                           clock_out_meta = %s::jsonb,
                           comment = %s,
@@ -544,6 +555,8 @@ def persist_shift_to_database(
                             time_out_dt,
                             hours_text,
                             float(hours_decimal or 0),
+                            clock_in_photo_url,
+                            clock_out_photo_url,
                             json.dumps(clock_in_result) if clock_in_result else None,
                             json.dumps(clock_out_result) if clock_out_result else None,
                             profile.get('comment') or '',
@@ -576,8 +589,8 @@ def persist_shift_to_database(
                             time_out_dt,
                             hours_text,
                             float(hours_decimal or 0),
-                            None,
-                            None,
+                            clock_in_photo_url,
+                            clock_out_photo_url,
                             json.dumps(clock_in_result) if clock_in_result else None,
                             json.dumps(clock_out_result) if clock_out_result else None,
                             profile.get('comment') or '',

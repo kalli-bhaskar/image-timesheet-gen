@@ -99,6 +99,12 @@ function toMetaFallback({ timestamp, locationTag, photoUrl }) {
     filename: photoUrl || 'image',
     crop: { strategy: 'frontend-fallback' },
   };
+
+function withRemoteUrl(meta, photoUrl) {
+  if (!meta) return meta;
+  const url = typeof photoUrl === 'string' && photoUrl.startsWith('https://') ? photoUrl : null;
+  return url ? { ...meta, file_url: url } : meta;
+}
 }
 
 function getDurationMinutes(startIso, endIso) {
@@ -399,7 +405,12 @@ export default function ClockAction() {
         };
 
         try {
-          await submitShiftMetaToBackend({ clockInMeta, clockOutMeta, profile, actor });
+          await submitShiftMetaToBackend({
+            clockInMeta: withRemoteUrl(clockInMeta, activeEntry.clock_in_photo_url),
+            clockOutMeta: withRemoteUrl(clockOutMeta, photoUrl),
+            profile,
+            actor,
+          });
         } catch (error) {
           console.error('submit_shift_meta failed', error);
           toast.warning('Clocked out locally. Backend workbook sync failed for this entry.');
@@ -543,7 +554,7 @@ export default function ClockAction() {
             work_location_tag: user.work_location_tag || imageMeta?.location_tag || '',
           };
           try {
-            await submitShiftMetaToBackend({ clockInMeta: imageMeta, profile, actor });
+            await submitShiftMetaToBackend({ clockInMeta: withRemoteUrl(imageMeta, data.photoUrl), profile, actor });
           } catch (error) {
             console.error('submit_shift_meta clock-in failed', error);
             toast.warning('Clocked in locally. Backend sync failed, so this entry may not appear on other devices yet.');
@@ -607,7 +618,7 @@ export default function ClockAction() {
           customer: user.customer || user.company_name || '',
           work_location_tag: user.work_location_tag || optimisticMeta?.location_tag || '',
         };
-        void submitShiftMetaToBackend({ clockInMeta: optimisticMeta, profile, actor }).catch((error) => {
+        void submitShiftMetaToBackend({ clockInMeta: withRemoteUrl(optimisticMeta, data.photoUrl), profile, actor }).catch((error) => {
           console.error('submit_shift_meta clock-in failed', error);
           toast.warning('Clocked in locally. Backend sync failed, so this entry may not appear on other devices yet.');
         });
@@ -710,7 +721,12 @@ export default function ClockAction() {
           };
 
           try {
-            await submitShiftMetaToBackend({ clockInMeta, clockOutMeta, profile, actor });
+            await submitShiftMetaToBackend({
+              clockInMeta: withRemoteUrl(clockInMeta, activeEntry.clock_in_photo_url),
+              clockOutMeta: withRemoteUrl(clockOutMeta, data.photoUrl),
+              profile,
+              actor,
+            });
           } catch (error) {
             console.error('submit_shift_meta (background) failed', error);
             toast.warning('Clocked out instantly, but backend OCR sync failed.');
