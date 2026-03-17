@@ -226,6 +226,34 @@ function applySort(rows, sortExpr) {
   });
 }
 
+function normalizeIsoMinute(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) return raw;
+  const year = parsed.getUTCFullYear();
+  const month = String(parsed.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(parsed.getUTCDate()).padStart(2, '0');
+  const hour = String(parsed.getUTCHours()).padStart(2, '0');
+  const minute = String(parsed.getUTCMinutes()).padStart(2, '0');
+  return `${year}-${month}-${day}T${hour}:${minute}`;
+}
+
+function entryMergeKey(entry) {
+  const email = String(entry?.employee_email || '').trim().toLowerCase();
+  const status = String(entry?.status || '').trim().toLowerCase();
+  const inPhoto = String(entry?.clock_in_photo_url || '').trim();
+  const outPhoto = String(entry?.clock_out_photo_url || '').trim();
+  if (inPhoto || outPhoto) {
+    return `${email}|photo|${inPhoto}|${outPhoto}|${status}`;
+  }
+
+  const date = String(entry?.date || '').slice(0, 10);
+  const timeIn = normalizeIsoMinute(entry?.time_in);
+  const timeOut = normalizeIsoMinute(entry?.time_out);
+  return `${email}|time|${date}|${timeIn}|${timeOut}|${status}`;
+}
+
 async function fileToDataUrl(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -417,13 +445,9 @@ export const localClient = {
               }
 
               // Merge local-only pending entries so Clock In -> Clock Out transition is immediate.
-              const remoteKeys = new Set(
-                remoteEntries.map((entry) =>
-                  `${entry.employee_email || ''}|${entry.time_in || ''}|${entry.status || ''}`
-                )
-              );
+              const remoteKeys = new Set(remoteEntries.map((entry) => entryMergeKey(entry)));
               const localOnly = localFiltered.filter((entry) => {
-                const key = `${entry.employee_email || ''}|${entry.time_in || ''}|${entry.status || ''}`;
+                const key = entryMergeKey(entry);
                 return !remoteKeys.has(key);
               });
 
